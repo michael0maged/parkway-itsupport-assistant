@@ -93,19 +93,53 @@ function addMsg(who, txt, opts={}){
   if (opts.voice) html += '🎤 <i>فويس</i>' + (txt ? '<br>' : '');
   html += fmt(txt || '');
   d.innerHTML = html;
-  if (who === 'bot' && txt && 'speechSynthesis' in window){
+  if (who === 'bot' && txt && opts.speakable){
     const m = document.createElement('div'); m.className='meta';
     const b = document.createElement('button'); b.textContent='🔊 اسمع الرد';
-    b.onclick = () => speak(txt); m.appendChild(b); d.appendChild(m);
+    b.onclick = () => speak(txt, b); m.appendChild(b); d.appendChild(m);
   }
   chat.appendChild(d); scroll(); return d;
 }
 
-function speak(t){
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(t.replace(/\*\*/g,''));
-  u.lang = /[\u0600-\u06FF]/.test(t) ? 'ar-EG' : 'en-US';
-  speechSynthesis.speak(u);
+/* ======== صوت مصري: Gemini TTS، ولو فشل يرجع لصوت الموبايل ======== */
+const audioCache = new Map();
+let player = null;
+async function speak(t, btn){
+  if (player){ player.pause(); player = null; }
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  const old = btn ? btn.textContent : '';
+  try{
+    let url = audioCache.get(t);
+    if (!url){
+      if (btn) btn.textContent = '⏳ بيجهّز الصوت…';
+      const a = await api({ action:'tts', text: t });
+      url = audioUrl(a.data, a.mime);
+      audioCache.set(t, url);
+    }
+    player = new Audio(url);
+    await player.play();
+  }catch(e){
+    if ('speechSynthesis' in window){
+      const u = new SpeechSynthesisUtterance(t.replace(/\*\*/g,''));
+      u.lang = /[\u0600-\u06FF]/.test(t) ? 'ar-EG' : 'en-US';
+      speechSynthesis.speak(u);
+    }
+  }finally{ if (btn) btn.textContent = old; }
+}
+
+// Gemini بيرجّع PCM خام، فبنلفّه في WAV عشان المتصفح يشغّله
+function audioUrl(b64, mime){
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+  if (mime && !/L16|pcm/i.test(mime)) return URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const rate = parseInt((/rate=(\d+)/.exec(mime||'')||[])[1] || '24000', 10);
+  const h = new DataView(new ArrayBuffer(44));
+  const w = (o,s) => { for (let i=0;i<s.length;i++) h.setUint8(o+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); h.setUint32(4, 36+bytes.length, true); w(8,'WAVE'); w(12,'fmt ');
+  h.setUint32(16,16,true); h.setUint16(20,1,true); h.setUint16(22,1,true);
+  h.setUint32(24,rate,true); h.setUint32(28,rate*2,true); h.setUint16(32,2,true); h.setUint16(34,16,true);
+  w(36,'data'); h.setUint32(40, bytes.length, true);
+  return URL.createObjectURL(new Blob([h.buffer, bytes], { type:'audio/wav' }));
 }
 
 function typing(on){
@@ -140,7 +174,7 @@ async function send(message, display){
     typing(false);
     history.push({ role:'user', text: res.transcript || message.text || '' });
     history.push({ role:'model', text: res.reply });
-    addMsg('bot', res.reply);
+    addMsg('bot', res.reply, { speakable: true });
     addActions();
   }catch(e){
     typing(false);
