@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>ماسح الكتب</title>
+<title>2ماسح الكتب</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -171,11 +171,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="lbl">شكل الصفحة</div>
       <div class="seg" id="filterSeg">
         <button data-v="original">أصلي</button>
-        <button data-v="enhance">محسّن</button>
+        <button data-v="enhance">ألوان نضيفة</button>
         <button data-v="gray">رمادي</button>
         <button data-v="bw">أبيض وأسود</button>
       </div>
-      <small>«أبيض وأسود» أوضح للنصوص وحجم الـ PDF أصغر. «محسّن» للكتب الملونة.</small>
+      <small>«أبيض وأسود» أوضح للنصوص وحجم الـ PDF أصغر. «ألوان نضيفة» بيبيّض الورق ويشيل الضل والإضاءة الصفرا ويسيب الألوان.</small>
     </div>
     <div class="row">
       <div class="lbl">تدوير الصورة</div>
@@ -453,40 +453,69 @@ function orderPts(p){
     p[d.indexOf(Math.max(...d))]  // bottom-left
   ];
 }
-function detectQuad(canvas){
-  const src = cv.imread(canvas), g = new cv.Mat(), e = new cv.Mat();
+function quadFromContour(cnt){
+  const hull = new cv.Mat();
+  cv.convexHull(cnt, hull, false, true);
+  const peri = cv.arcLength(hull, true);
+  let q = null;
+  for (const eps of [0.02, 0.03, 0.04, 0.05, 0.06, 0.08]){
+    const ap = new cv.Mat();
+    cv.approxPolyDP(hull, ap, eps * peri, true);
+    if (ap.rows === 4){ q = []; for (let j = 0; j < 4; j++) q.push({x:ap.data32S[j*2], y:ap.data32S[j*2+1]}); }
+    ap.delete();
+    if (q) break;
+  }
+  if (!q){
+    try { q = cv.RotatedRect.points(cv.minAreaRect(hull)).map(p => ({x:p.x, y:p.y})); } catch(e) {}
+  }
+  hull.delete();
+  return q;
+}
+function largestContour(bin, minArea){
   const cs = new cv.MatVector(), h = new cv.Mat();
-  let best = null, bestScore = 0;
+  cv.findContours(bin, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+  let bi = -1, ba = minArea;
+  for (let i = 0; i < cs.size(); i++){
+    const c = cs.get(i); const a = cv.contourArea(c);
+    if (a > ba){ ba = a; bi = i; }
+    c.delete();
+  }
+  let q = null;
+  if (bi > -1){ const c = cs.get(bi); q = quadFromContour(c); c.delete(); }
+  cs.delete(); h.delete();
+  return q;
+}
+// Paper = bright and not colorful. Works for open books on a desk.
+function detectQuad(canvas){
+  const src = cv.imread(canvas), rgb = new cv.Mat(), hsv = new cv.Mat(), ch = new cv.MatVector();
+  const score = new cv.Mat(), k1 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
+  const k2 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+  const total = canvas.width * canvas.height;
+  let q = null;
   try {
-    cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(g, g, new cv.Size(5, 5), 0);
-    cv.Canny(g, e, 40, 120);
-    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    cv.dilate(e, e, k); k.delete();
-    cv.findContours(e, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-    const total = canvas.width * canvas.height;
-    for (let i = 0; i < cs.size(); i++){
-      const cnt = cs.get(i);
-      const a = cv.contourArea(cnt);
-      if (a > total * 0.15 && a > bestScore){
-        const ap = new cv.Mat();
-        cv.approxPolyDP(cnt, ap, 0.02 * cv.arcLength(cnt, true), true);
-        if (ap.rows === 4 && cv.isContourConvex(ap)){
-          best = []; for (let j = 0; j < 4; j++) best.push({x:ap.data32S[j*2], y:ap.data32S[j*2+1]});
-          bestScore = a;
-        } else if (a > total * 0.25 && a * 0.7 > bestScore){
-          try {
-            const r = cv.minAreaRect(cnt);
-            best = cv.RotatedRect.points(r).map(p => ({x:p.x, y:p.y}));
-            bestScore = a * 0.7;
-          } catch(err) {}
-        }
-        ap.delete();
-      }
-      cnt.delete();
+    cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    cv.split(hsv, ch);
+    const s = ch.get(1), v = ch.get(2);
+    cv.subtract(v, s, score);
+    s.delete(); v.delete();
+    cv.GaussianBlur(score, score, new cv.Size(7, 7), 0);
+    cv.threshold(score, score, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    cv.morphologyEx(score, score, cv.MORPH_CLOSE, k1);
+    cv.morphologyEx(score, score, cv.MORPH_OPEN, k2);
+    q = largestContour(score, total * 0.15);
+    if (!q){
+      // fallback: edges
+      const g = new cv.Mat();
+      cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
+      cv.GaussianBlur(g, g, new cv.Size(5, 5), 0);
+      cv.Canny(g, g, 40, 120);
+      cv.dilate(g, g, k2);
+      q = largestContour(g, total * 0.15);
+      g.delete();
     }
-  } finally { src.delete(); g.delete(); e.delete(); cs.delete(); h.delete(); }
-  return best ? orderPts(best) : null;
+  } finally { src.delete(); rgb.delete(); hsv.delete(); ch.delete(); score.delete(); k1.delete(); k2.delete(); }
+  return q ? orderPts(q) : null;
 }
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 function warp(src, q){
@@ -513,19 +542,88 @@ function rotateMat(m, deg){
   const code = deg === 90 ? cv.ROTATE_90_CLOCKWISE : deg === 180 ? cv.ROTATE_180 : cv.ROTATE_90_COUNTERCLOCKWISE;
   const out = new cv.Mat(); cv.rotate(m, out, code); m.delete(); return out;
 }
+// "Magic color": divide each channel by its estimated paper background.
+// Removes shadows and yellow light, paper turns white, ink keeps its color.
+function magicColor(m){ // m: RGBA → returns RGB
+  const rgb = new cv.Mat(); cv.cvtColor(m, rgb, cv.COLOR_RGBA2RGB); m.delete();
+  const small = new cv.Mat(), bgSmall = new cv.Mat(), bg = new cv.Mat(), out = new cv.Mat();
+  const chs = new cv.MatVector(), bgs = new cv.MatVector();
+  const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
+  cv.resize(rgb, small, new cv.Size(Math.max(1, Math.round(rgb.cols/4)), Math.max(1, Math.round(rgb.rows/4))), 0, 0, cv.INTER_AREA);
+  cv.split(small, chs);
+  for (let i = 0; i < 3; i++){
+    const c = chs.get(i);
+    cv.dilate(c, c, k);
+    cv.medianBlur(c, c, 21);
+    bgs.push_back(c); c.delete();
+  }
+  cv.merge(bgs, bgSmall);
+  cv.resize(bgSmall, bg, new cv.Size(rgb.cols, rgb.rows), 0, 0, cv.INTER_LINEAR);
+  cv.divide(rgb, bg, out, 255);
+  out.convertTo(out, -1, 1.15, -30);
+  rgb.delete(); small.delete(); bgSmall.delete(); bg.delete(); chs.delete(); bgs.delete(); k.delete();
+  return out;
+}
 function applyFilter(m){
   if (S.filter === 'original') return m;
-  if (S.filter === 'enhance'){ m.convertTo(m, -1, 1.2, 12); return m; }
-  const g = new cv.Mat(); cv.cvtColor(m, g, cv.COLOR_RGBA2GRAY); m.delete();
-  if (S.filter === 'bw') cv.adaptiveThreshold(g, g, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 25, 12);
-  else g.convertTo(g, -1, 1.15, 10);
+  const c = magicColor(m);
+  if (S.filter === 'enhance') return c;
+  const g = new cv.Mat(); cv.cvtColor(c, g, cv.COLOR_RGB2GRAY); c.delete();
+  if (S.filter === 'bw') cv.adaptiveThreshold(g, g, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 31, 18);
   return g;
 }
-function splitMat(m){
-  const w2 = Math.floor(m.cols / 2);
-  const L = m.roi(new cv.Rect(0, 0, w2, m.rows)).clone();
-  const R = m.roi(new cv.Rect(w2, 0, m.cols - w2, m.rows)).clone();
+// Find the book's gutter: the widest blank (no ink) vertical band near the middle.
+function findSpine(m){
+  const W = 400, H = Math.max(1, Math.round(m.rows * W / m.cols));
+  const sm = new cv.Mat(), g = new cv.Mat();
+  cv.resize(m, sm, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
+  cv.cvtColor(sm, g, sm.channels() === 4 ? cv.COLOR_RGBA2GRAY : cv.COLOR_RGB2GRAY);
+  cv.adaptiveThreshold(g, g, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 15, 15);
+  const col = new Float32Array(W), d = g.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) col[x] += d[y*W + x];
+  sm.delete(); g.delete();
+  const k = 13, smo = new Float32Array(W);
+  for (let x = 0; x < W; x++){ let s = 0, n = 0; for (let j = x - 6; j <= x + 6; j++) if (j >= 0 && j < W){ s += col[j]; n++; } smo[x] = s / n; }
+  const a = Math.round(W * 0.38), b = Math.round(W * 0.62);
+  let max = 0; for (let x = a; x < b; x++) max = Math.max(max, smo[x]);
+  let best = W / 2, bv = Infinity;
+  for (let x = a; x < b; x++){ const v = smo[x] + Math.abs(x - W/2) / (W/2) * max * 0.3; if (v < bv){ bv = v; best = x; } }
+  // center of the blank band around the minimum
+  const lim = smo[best] + (max - smo[best]) * 0.25;
+  let l = best, r = best;
+  while (l > a && smo[l-1] <= lim) l--;
+  while (r < b - 1 && smo[r+1] <= lim) r++;
+  return Math.round((l + r) / 2 * m.cols / W);
+}
+// Cut the dark gutter shadow off the inner edge of a page (side: 'right' or 'left').
+function trimInner(m, side){
+  const W = 200, H = Math.max(1, Math.round(m.rows * W / m.cols));
+  const sm = new cv.Mat(), g = new cv.Mat();
+  cv.resize(m, sm, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
+  const nc = sm.channels();
+  if (nc === 1) sm.copyTo(g); else cv.cvtColor(sm, g, nc === 4 ? cv.COLOR_RGBA2GRAY : cv.COLOR_RGB2GRAY);
+  const col = new Float32Array(W), d = g.data;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) col[x] += d[y*W + x] / H;
+  sm.delete(); g.delete();
+  const sorted = Array.from(col).sort((a, b) => a - b), med = sorted[W >> 1];
+  const maxCut = Math.round(W * 0.1);
+  let cut = 0;
+  for (let i = 0; i < maxCut; i++){
+    const x = side === 'right' ? W - 1 - i : i;
+    if (col[x] < med * 0.75) cut = i + 1;
+  }
+  if (!cut) return m;
+  const px = Math.round(cut * m.cols / W) + 2;
+  const r = side === 'right' ? new cv.Rect(0, 0, m.cols - px, m.rows) : new cv.Rect(px, 0, m.cols - px, m.rows);
+  const out = m.roi(r).clone(); m.delete();
+  return out;
+}
+function splitAt(m, x){
+  x = Math.min(m.cols - 2, Math.max(2, x));
+  let L = m.roi(new cv.Rect(0, 0, x, m.rows)).clone();
+  let R = m.roi(new cv.Rect(x, 0, m.cols - x, m.rows)).clone();
   m.delete();
+  L = trimInner(L, 'right'); R = trimInner(R, 'left');
   return S.order === 'rtl' ? [R, L] : [L, R];
 }
 function processCV(full){
@@ -542,8 +640,9 @@ function processCV(full){
   if (quad){ const w = warp(m, quad); m.delete(); m = w; }
   m = limitSize(m, S.split ? 3000 : 2200);
   m = rotateMat(m, S.rot);
+  const spine = S.split ? findSpine(m) : 0;
   m = applyFilter(m);
-  const mats = S.split ? splitMat(m) : [m];
+  const mats = S.split ? splitAt(m, spine) : [m];
   return mats.map(x => { const c = document.createElement('canvas'); cv.imshow(c, x); x.delete(); return c; });
 }
 function rotateCanvasFallback(c, deg){
