@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#121110">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>ماسح الكتب</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+/* Layout: full-screen camera, status on top, thumbnail strip + controls at the bottom */
+:root{
+  --bg:#121110; --panel:#1d1b19; --line:#33302c; --fg:#f3efe8; --muted:#a39d93;
+  --accent:#f2b33d; --ok:#4cc38a; --warn:#ff7a59;
+  --font:"IBM Plex Sans Arabic",system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+[hidden]{display:none!important}
+
+/* start screen */
+#start{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:center;gap:22px;
+  padding:24px max(20px,env(safe-area-inset-right)) 24px max(20px,env(safe-area-inset-left));max-width:520px;margin:auto}
+#start h1{margin:0;font-size:2rem;font-weight:700;line-height:1.2}
+#start h1 span{color:var(--accent)}
+#start p{margin:0;color:var(--muted);line-height:1.7}
+.steps{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.steps li{display:flex;gap:12px;align-items:flex-start;line-height:1.6}
+.steps b{flex:none;width:26px;height:26px;border-radius:50%;background:var(--panel);border:1px solid var(--line);
+  display:grid;place-items:center;font-size:.85rem;color:var(--accent)}
+label.f{display:grid;gap:6px;font-size:.9rem;color:var(--muted)}
+input[type=text]{background:var(--panel);border:1px solid var(--line);color:var(--fg);border-radius:12px;padding:14px;font:inherit;font-size:1rem;width:100%}
+.btn{border:0;border-radius:14px;padding:15px 18px;font-weight:700;font-size:1.05rem}
+.btn.primary{background:var(--accent);color:#1b1306}
+.btn.ghost{background:var(--panel);border:1px solid var(--line)}
+.btn.danger{background:transparent;border:1px solid var(--warn);color:var(--warn)}
+#err{color:var(--warn);line-height:1.7}
+.resume{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;color:var(--muted)}
+
+/* camera */
+#cam{position:fixed;inset:0;display:flex;flex-direction:column}
+#stage{position:relative;flex:1;min-height:0;background:#000}
+#video,#overlay{position:absolute;inset:0;width:100%;height:100%}
+#video{object-fit:contain}
+#flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .25s}
+#flash.on{opacity:.75;transition:none}
+
+#top{position:absolute;top:calc(env(safe-area-inset-top) + 10px);left:12px;right:12px;display:flex;gap:8px;align-items:center;justify-content:space-between;pointer-events:none}
+#top > *{pointer-events:auto}
+#pill{display:flex;align-items:center;gap:10px;background:rgba(18,17,16,.82);backdrop-filter:blur(8px);border:1px solid var(--line);
+  border-radius:999px;padding:8px 14px;font-weight:600;font-size:.95rem;min-width:0}
+#dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--muted)}
+#pill[data-s=moving] #dot{background:var(--warn)}
+#pill[data-s=settling] #dot{background:var(--accent)}
+#pill[data-s=done] #dot,#pill[data-s=ready] #dot{background:var(--ok)}
+#bar{width:46px;height:4px;border-radius:2px;background:var(--line);overflow:hidden;flex:none}
+#bar i{display:block;height:100%;width:0;background:var(--accent)}
+.iconbtn{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:rgba(18,17,16,.82);display:grid;place-items:center;font-size:1.1rem}
+.iconbtn.on{background:var(--accent);color:#1b1306;border-color:var(--accent)}
+#toprt{display:flex;gap:8px}
+#cvnote{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:.8rem;color:var(--muted);background:rgba(18,17,16,.8);padding:4px 10px;border-radius:999px;white-space:nowrap}
+
+#bottom{background:var(--bg);border-top:1px solid var(--line);padding:10px max(12px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));display:grid;gap:10px}
+#strip{display:flex;gap:8px;overflow-x:auto;min-height:64px;padding-bottom:2px;scrollbar-width:none}
+#strip::-webkit-scrollbar{display:none}
+#strip .empty{color:var(--muted);font-size:.9rem;align-self:center}
+.th{position:relative;flex:none;width:46px;height:62px;border-radius:6px;overflow:hidden;border:1px solid var(--line);padding:0;background:#000}
+.th img{width:100%;height:100%;object-fit:cover;display:block}
+.th span{position:absolute;bottom:0;inset-inline:0;background:rgba(0,0,0,.65);font-size:.7rem;text-align:center;font-variant-numeric:tabular-nums}
+#controls{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
+#autoBtn{justify-self:start;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:10px 14px;font-weight:600;font-size:.9rem}
+#autoBtn.on{border-color:var(--ok);color:var(--ok)}
+#shutter{width:72px;height:72px;border-radius:50%;border:4px solid var(--fg);background:transparent;padding:5px}
+#shutter i{display:block;width:100%;height:100%;border-radius:50%;background:var(--fg)}
+#shutter:active i{background:var(--accent)}
+#doneBtn{justify-self:end;border:0;background:var(--accent);color:#1b1306;border-radius:999px;padding:10px 14px;font-weight:700;font-size:.9rem;font-variant-numeric:tabular-nums}
+
+/* sheets */
+.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;z-index:20}
+.sheet{width:100%;max-height:88%;overflow:auto;background:var(--panel);border-radius:20px 20px 0 0;border-top:1px solid var(--line);
+  padding:18px max(18px,env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));display:grid;gap:16px}
+.sheet h2{margin:0;font-size:1.2rem}
+.row{display:grid;gap:8px}
+.row > .lbl{display:flex;justify-content:space-between;font-weight:600}
+.row > .lbl em{font-style:normal;color:var(--accent);font-variant-numeric:tabular-nums}
+.row small{color:var(--muted);line-height:1.6}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{flex:1 1 auto;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:10px 8px;font-size:.9rem}
+.seg button[aria-pressed=true]{background:var(--accent);color:#1b1306;border-color:var(--accent);font-weight:700}
+.sw{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:600}
+.sw input{width:22px;height:22px;accent-color:var(--accent)}
+.prog{height:8px;border-radius:4px;background:var(--bg);overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .15s}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+/* viewer */
+#viewer{position:fixed;inset:0;background:#000;z-index:30;display:flex;flex-direction:column}
+#viewer img{flex:1;min-height:0;width:100%;object-fit:contain}
+#viewer .vbar{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:12px max(14px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));background:var(--bg)}
+#viewer .vtop{padding:calc(env(safe-area-inset-top) + 12px) 16px 10px;background:var(--bg);font-weight:600;font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){#flash{transition:none}.prog i{transition:none}}
+</style>
+</head>
+<body>
+
+<!-- START -->
+<section id="start">
+  <h1>ماسح <span>الكتب</span></h1>
+  <p>ثبّت الموبايل فوق الكتاب، وقلّب الصفحات. أول ما الصفحة تثبت، التطبيق بيصوّرها ويقصّها ويعدّل ميلها لوحده.</p>
+  <ul class="steps">
+    <li><b>1</b><span>ثبّت الموبايل على ستاند أو كوباية، والكاميرا شايفة الصفحة كلها.</span></li>
+    <li><b>2</b><span>قلّب الصفحة وشيل إيدك. هتسمع صوت لما تتصور.</span></li>
+    <li><b>3</b><span>في الآخر دوس «خلّصت» واحفظ الكتاب PDF واحد.</span></li>
+  </ul>
+  <label class="f" for="bookName">اسم الكتاب
+    <input type="text" id="bookName" placeholder="مثال: Science Grade 5" autocomplete="off">
+  </label>
+  <div class="resume" id="resume" hidden></div>
+  <button class="btn primary" id="startBtn">افتح الكاميرا</button>
+  <div id="err" hidden></div>
+</section>
+
+<!-- CAMERA -->
+<section id="cam" hidden>
+  <div id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div id="flash"></div>
+    <div id="top">
+      <div id="pill" data-s="ready"><span id="dot"></span><span id="stxt">جاهز — حط الكتاب</span><span id="bar"><i></i></span></div>
+      <div id="toprt">
+        <button class="iconbtn" id="torchBtn" hidden aria-label="الفلاش">⚡</button>
+        <button class="iconbtn" id="setBtn" aria-label="الإعدادات">⚙</button>
+      </div>
+    </div>
+    <div id="cvnote">بيجهّز القص التلقائي…</div>
+  </div>
+  <div id="bottom">
+    <div id="strip"><span class="empty">الصفحات اللي تتصور هتظهر هنا</span></div>
+    <div id="controls">
+      <button id="autoBtn" class="on">تلقائي: شغّال</button>
+      <button id="shutter" aria-label="صوّر دلوقتي"><i></i></button>
+      <button id="doneBtn">خلّصت · <span id="cnt">0</span></button>
+    </div>
+  </div>
+</section>
+
+<!-- SETTINGS -->
+<div class="sheet-bg" id="setSheet" hidden>
+  <div class="sheet" role="dialog" aria-label="الإعدادات">
+    <h2>الإعدادات</h2>
+    <div class="row">
+      <div class="lbl">يستنى قد إيه بعد ما الصفحة تثبت <em id="delayV"></em></div>
+      <input type="range" id="delay" min="300" max="2000" step="100">
+      <small>لو بيصوّر وإيدك لسه على الصفحة، زوّد الوقت.</small>
+    </div>
+    <div class="row">
+      <div class="lbl">حساسية الحركة <em id="sensV"></em></div>
+      <input type="range" id="sens" min="1" max="10" step="1">
+      <small>لو مش بيحس إنك قلّبت، زوّدها. لو بيتلخبط من رعشة الإيد، قلّلها.</small>
+    </div>
+    <div class="row">
+      <div class="lbl">شكل الصفحة</div>
+      <div class="seg" id="filterSeg">
+        <button data-v="original">أصلي</button>
+        <button data-v="enhance">محسّن</button>
+        <button data-v="gray">رمادي</button>
+        <button data-v="bw">أبيض وأسود</button>
+      </div>
+      <small>«أبيض وأسود» أوضح للنصوص وحجم الـ PDF أصغر. «محسّن» للكتب الملونة.</small>
+    </div>
+    <div class="row">
+      <div class="lbl">تدوير الصورة</div>
+      <div class="seg" id="rotSeg">
+        <button data-v="0">0°</button><button data-v="90">90°</button><button data-v="180">180°</button><button data-v="270">270°</button>
+      </div>
+    </div>
+    <label class="sw" for="split">الكاميرا شايفة صفحتين مع بعض (قسّمهم) <input type="checkbox" id="split"></label>
+    <div class="row" id="orderRow">
+      <div class="lbl">ترتيب الصفحتين</div>
+      <div class="seg" id="orderSeg">
+        <button data-v="ltr">الشمال الأول (إنجليزي)</button>
+        <button data-v="rtl">اليمين الأول (عربي)</button>
+      </div>
+    </div>
+    <label class="sw" for="needQuad">ما يصوّرش غير لما يلاقي حدود الورقة <input type="checkbox" id="needQuad"></label>
+    <label class="sw" for="crop">قص وتعديل الميل تلقائي <input type="checkbox" id="crop"></label>
+    <button class="btn ghost" id="setClose">تمام</button>
+  </div>
+</div>
+
+<!-- EXPORT -->
+<div class="sheet-bg" id="expSheet" hidden>
+  <div class="sheet" role="dialog" aria-label="حفظ الكتاب">
+    <h2>حفظ الكتاب PDF</h2>
+    <label class="f" for="expName">اسم الملف
+      <input type="text" id="expName" autocomplete="off">
+    </label>
+    <div id="expInfo" style="color:var(--muted)"></div>
+    <div class="prog" id="expProg" hidden><i></i></div>
+    <button class="btn primary" id="expBtn">احفظ PDF</button>
+    <div class="two">
+      <button class="btn ghost" id="expBack">رجوع للتصوير</button>
+      <button class="btn danger" id="newBook">كتاب جديد</button>
+    </div>
+    <small style="color:var(--muted);line-height:1.6">الصفحات محفوظة على الموبايل لحد ما تدوس «كتاب جديد»، حتى لو قفلت الصفحة بالغلط.</small>
+  </div>
+</div>
+
+<!-- VIEWER -->
+<div id="viewer" hidden>
+  <div class="vtop" id="vTitle"></div>
+  <img id="vImg" alt="">
+  <div class="vbar">
+    <button class="btn ghost" id="vClose">رجوع</button>
+    <button class="btn ghost" id="vRot">لف 90°</button>
+    <button class="btn danger" id="vDel">امسح الصفحة</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const video = $('#video'), overlay = $('#overlay'), octx = overlay.getContext('2d');
+
+/* ---------- settings ---------- */
+const S = {delay:800, sens:5, filter:'enhance', rot:0, split:false, order:'ltr', needQuad:false, crop:true, auto:true};
+try { Object.assign(S, JSON.parse(localStorage.getItem('bookscan.settings') || '{}')); } catch(e) {}
+function saveS(){ try { localStorage.setItem('bookscan.settings', JSON.stringify(S)); } catch(e) {} }
+
+/* ---------- storage (IndexedDB) ---------- */
+let db = null;
+function openDB(){
+  return new Promise(res => {
+    try {
+      const r = indexedDB.open('bookscan', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('pages', {keyPath:'id'});
+      r.onsuccess = () => { db = r.result; res(); };
+      r.onerror = () => res();
+    } catch(e) { res(); }
+  });
+}
+function tx(mode, fn){
+  return new Promise(res => {
+    if (!db) return res(null);
+    try {
+      const t = db.transaction('pages', mode); const st = t.objectStore('pages');
+      const r = fn(st); t.oncomplete = () => res(r && r.result); t.onerror = () => res(null);
+    } catch(e) { res(null); }
+  });
+}
+const dbPut = p => tx('readwrite', st => st.put({id:p.id, blob:p.blob, w:p.w, h:p.h}));
+const dbDel = id => tx('readwrite', st => st.delete(id));
+const dbClear = () => tx('readwrite', st => st.clear());
+const dbAll = () => tx('readonly', st => st.getAll());
+
+/* ---------- pages ---------- */
+let pages = [];
+let idSeq = 0;
+const nextId = () => Date.now() * 100 + (idSeq++ % 100);
+
+function renderStrip(){
+  const strip = $('#strip');
+  strip.innerHTML = '';
+  if (!pages.length){ strip.innerHTML = '<span class="empty">الصفحات اللي تتصور هتظهر هنا</span>'; }
+  pages.forEach((p, i) => strip.appendChild(thumb(p, i)));
+  strip.scrollLeft = -strip.scrollWidth; // RTL: newest at the far end
+  $('#cnt').textContent = pages.length;
+}
+function thumb(p, i){
+  const b = document.createElement('button');
+  b.className = 'th'; b.setAttribute('aria-label', 'صفحة ' + (i+1));
+  if (!p.url) p.url = URL.createObjectURL(p.blob);
+  b.innerHTML = '<img alt=""><span></span>';
+  b.querySelector('img').src = p.url;
+  b.querySelector('span').textContent = i + 1;
+  b.onclick = () => openViewer(p);
+  return b;
+}
+
+/* ---------- OpenCV loading ---------- */
+let cvReady = false;
+const CV_URLS = [
+  'https://docs.opencv.org/4.8.0/opencv.js',
+  'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.8.0-release.1/dist/opencv.js'
+];
+function cvNote(t){ const n = $('#cvnote'); if (t){ n.textContent = t; n.hidden = false; } else n.hidden = true; }
+function loadCV(i){
+  i = i || 0;
+  if (i >= CV_URLS.length){ cvNote('القص التلقائي مش متاح — هيتصور الإطار كامل'); return; }
+  const s = document.createElement('script');
+  s.async = true; s.src = CV_URLS[i];
+  s.onload = () => {
+    const done = () => { cvReady = true; cvNote(null); };
+    try {
+      const c = window.cv;
+      if (c && c.Mat) done();
+      else if (c && typeof c.then === 'function') c.then(m => { window.cv = m; done(); });
+      else if (c) c.onRuntimeInitialized = done;
+      else loadCV(i+1);
+    } catch(e){ loadCV(i+1); }
+  };
+  s.onerror = () => loadCV(i+1);
+  document.head.appendChild(s);
+}
+
+/* ---------- camera ---------- */
+let stream = null, track = null, torchOn = false, wake = null;
+async function startCam(){
+  const err = $('#err');
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    err.hidden = false;
+    err.textContent = 'الكاميرا محتاجة الصفحة تتفتح من رابط https (زي GitHub Pages). افتحها من الرابط مش من ملف على الموبايل.';
+    return false;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio:false,
+      video:{facingMode:{ideal:'environment'}, width:{ideal:3840}, height:{ideal:2160}}
+    });
+  } catch(e){
+    err.hidden = false;
+    err.textContent = 'مش قادر يفتح الكاميرا. اسمح للمتصفح باستخدام الكاميرا وجرّب تاني. (' + (e.name || e) + ')';
+    return false;
+  }
+  video.srcObject = stream;
+  try { await video.play(); } catch(e) {}
+  track = stream.getVideoTracks()[0];
+  try {
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) $('#torchBtn').hidden = false;
+    if (caps.focusMode && caps.focusMode.includes('continuous'))
+      track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
+  } catch(e) {}
+  keepAwake();
+  return true;
+}
+async function keepAwake(){
+  try { if ('wakeLock' in navigator) wake = await navigator.wakeLock.request('screen'); } catch(e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && stream) keepAwake();
+});
+
+/* ---------- feedback ---------- */
+let ac = null;
+function beep(){
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.value = 1150; g.gain.value = 0.07;
+    o.connect(g); g.connect(ac.destination);
+    o.start(); o.stop(ac.currentTime + 0.07);
+  } catch(e) {}
+  try { navigator.vibrate && navigator.vibrate(50); } catch(e) {}
+}
+function flash(){
+  const f = $('#flash'); f.classList.add('on');
+  requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on')));
+}
+const STATUS = {
+  ready:'جاهز — قلّب الصفحة',
+  moving:'بيتحرك…',
+  settling:'ثابت… هيصوّر',
+  processing:'بيقص ويظبط…',
+  done:'اتصورت ✓ قلّب اللي بعدها',
+  noquad:'مش شايف حدود الورقة',
+  paused:'التلقائي واقف — صوّر بالزرار'
+};
+let lastStatus = '';
+function setStatus(s, prog){
+  const pill = $('#pill');
+  if (s !== lastStatus){ pill.dataset.s = s; $('#stxt').textContent = STATUS[s]; lastStatus = s; }
+  $('#bar i').style.width = Math.round(Math.min(1, prog || 0) * 100) + '%';
+}
+
+/* ---------- motion detection → auto capture ---------- */
+const mc = document.createElement('canvas'); mc.width = 80; mc.height = 60;
+const mx = mc.getContext('2d', {willReadFrequently:true});
+let prev = null, armed = false, stableSince = 0, busy = false, lastQuad = null, doneAt = 0;
+
+function motionTick(){
+  if (!video.videoWidth || busy) return;
+  mx.drawImage(video, 0, 0, 80, 60);
+  const d = mx.getImageData(0, 0, 80, 60).data;
+  const cur = new Uint8Array(4800);
+  for (let i = 0; i < 4800; i++) cur[i] = (d[i*4]*3 + d[i*4+1]*6 + d[i*4+2]) / 10 | 0;
+  let diff = 0;
+  if (prev){ for (let i = 0; i < 4800; i++) diff += Math.abs(cur[i] - prev[i]); diff /= 4800; }
+  prev = cur;
+
+  const hi = 3 + (11 - S.sens) * 1.2;   // above this = page is moving
+  const lo = hi * 0.35;                 // below this = page is still
+  const now = performance.now();
+
+  if (diff > hi){ armed = true; stableSince = 0; setStatus('moving'); return; }
+  if (diff >= lo){ stableSince = 0; return; }
+  if (!stableSince) stableSince = now;
+
+  if (!S.auto){ setStatus('paused'); return; }
+  if (!armed){ if (now - doneAt > 1500) setStatus('ready'); return; }
+  const t = now - stableSince;
+  if (S.needQuad && cvReady && S.crop && !lastQuad){ setStatus('noquad'); return; }
+  if (t >= S.delay){ armed = false; capture(); }
+  else setStatus('settling', t / S.delay);
+}
+
+/* ---------- live page outline ---------- */
+const dc = document.createElement('canvas');
+function detectTick(){
+  if (!cvReady || !S.crop || busy || !video.videoWidth){ drawQuad(null); return; }
+  const sc = 360 / Math.max(video.videoWidth, video.videoHeight);
+  dc.width = Math.round(video.videoWidth * sc); dc.height = Math.round(video.videoHeight * sc);
+  dc.getContext('2d').drawImage(video, 0, 0, dc.width, dc.height);
+  let q = null;
+  try { q = detectQuad(dc); } catch(e) {}
+  lastQuad = q ? q.map(p => ({x:p.x / dc.width, y:p.y / dc.height})) : null;
+  drawQuad(lastQuad);
+}
+function drawQuad(q){
+  const dpr = window.devicePixelRatio || 1;
+  const cw = overlay.clientWidth, ch = overlay.clientHeight;
+  if (overlay.width !== Math.round(cw*dpr) || overlay.height !== Math.round(ch*dpr)){
+    overlay.width = Math.round(cw*dpr); overlay.height = Math.round(ch*dpr);
+  }
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  octx.clearRect(0, 0, cw, ch);
+  if (!q || !video.videoWidth) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const s = Math.min(cw / vw, ch / vh), ox = (cw - vw*s) / 2, oy = (ch - vh*s) / 2;
+  octx.beginPath();
+  q.forEach((p, i) => { const x = ox + p.x*vw*s, y = oy + p.y*vh*s; i ? octx.lineTo(x, y) : octx.moveTo(x, y); });
+  octx.closePath();
+  octx.fillStyle = 'rgba(242,179,61,.14)'; octx.fill();
+  octx.lineWidth = 3; octx.strokeStyle = '#f2b33d'; octx.stroke();
+}
+
+/* ---------- OpenCV image processing ---------- */
+function orderPts(p){
+  const s = p.map(q => q.x + q.y), d = p.map(q => q.y - q.x);
+  return [
+    p[s.indexOf(Math.min(...s))], // top-left
+    p[d.indexOf(Math.min(...d))], // top-right
+    p[s.indexOf(Math.max(...s))], // bottom-right
+    p[d.indexOf(Math.max(...d))]  // bottom-left
+  ];
+}
+function detectQuad(canvas){
+  const src = cv.imread(canvas), g = new cv.Mat(), e = new cv.Mat();
+  const cs = new cv.MatVector(), h = new cv.Mat();
+  let best = null, bestScore = 0;
+  try {
+    cv.cvtColor(src, g, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(g, g, new cv.Size(5, 5), 0);
+    cv.Canny(g, e, 40, 120);
+    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cv.dilate(e, e, k); k.delete();
+    cv.findContours(e, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    const total = canvas.width * canvas.height;
+    for (let i = 0; i < cs.size(); i++){
+      const cnt = cs.get(i);
+      const a = cv.contourArea(cnt);
+      if (a > total * 0.15 && a > bestScore){
+        const ap = new cv.Mat();
+        cv.approxPolyDP(cnt, ap, 0.02 * cv.arcLength(cnt, true), true);
+        if (ap.rows === 4 && cv.isContourConvex(ap)){
+          best = []; for (let j = 0; j < 4; j++) best.push({x:ap.data32S[j*2], y:ap.data32S[j*2+1]});
+          bestScore = a;
+        } else if (a > total * 0.25 && a * 0.7 > bestScore){
+          try {
+            const r = cv.minAreaRect(cnt);
+            best = cv.RotatedRect.points(r).map(p => ({x:p.x, y:p.y}));
+            bestScore = a * 0.7;
+          } catch(err) {}
+        }
+        ap.delete();
+      }
+      cnt.delete();
+    }
+  } finally { src.delete(); g.delete(); e.delete(); cs.delete(); h.delete(); }
+  return best ? orderPts(best) : null;
+}
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function warp(src, q){
+  const [tl, tr, br, bl] = q;
+  const W = Math.round(Math.max(dist(tl, tr), dist(bl, br)));
+  const H = Math.round(Math.max(dist(tl, bl), dist(tr, br)));
+  const a = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x,tl.y, tr.x,tr.y, br.x,br.y, bl.x,bl.y]);
+  const b = cv.matFromArray(4, 1, cv.CV_32FC2, [0,0, W,0, W,H, 0,H]);
+  const M = cv.getPerspectiveTransform(a, b);
+  const dst = new cv.Mat();
+  cv.warpPerspective(src, dst, M, new cv.Size(W, H), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
+  a.delete(); b.delete(); M.delete();
+  return dst;
+}
+function limitSize(m, max){
+  const big = Math.max(m.cols, m.rows);
+  if (big <= max) return m;
+  const r = max / big, out = new cv.Mat();
+  cv.resize(m, out, new cv.Size(Math.round(m.cols*r), Math.round(m.rows*r)), 0, 0, cv.INTER_AREA);
+  m.delete(); return out;
+}
+function rotateMat(m, deg){
+  if (!deg) return m;
+  const code = deg === 90 ? cv.ROTATE_90_CLOCKWISE : deg === 180 ? cv.ROTATE_180 : cv.ROTATE_90_COUNTERCLOCKWISE;
+  const out = new cv.Mat(); cv.rotate(m, out, code); m.delete(); return out;
+}
+function applyFilter(m){
+  if (S.filter === 'original') return m;
+  if (S.filter === 'enhance'){ m.convertTo(m, -1, 1.2, 12); return m; }
+  const g = new cv.Mat(); cv.cvtColor(m, g, cv.COLOR_RGBA2GRAY); m.delete();
+  if (S.filter === 'bw') cv.adaptiveThreshold(g, g, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 25, 12);
+  else g.convertTo(g, -1, 1.15, 10);
+  return g;
+}
+function splitMat(m){
+  const w2 = Math.floor(m.cols / 2);
+  const L = m.roi(new cv.Rect(0, 0, w2, m.rows)).clone();
+  const R = m.roi(new cv.Rect(w2, 0, m.cols - w2, m.rows)).clone();
+  m.delete();
+  return S.order === 'rtl' ? [R, L] : [L, R];
+}
+function processCV(full){
+  let quad = null;
+  if (S.crop){
+    const sc = 500 / Math.max(full.width, full.height);
+    const sm = document.createElement('canvas');
+    sm.width = Math.round(full.width * sc); sm.height = Math.round(full.height * sc);
+    sm.getContext('2d').drawImage(full, 0, 0, sm.width, sm.height);
+    quad = detectQuad(sm);
+    if (quad) quad = quad.map(p => ({x:p.x / sc, y:p.y / sc}));
+  }
+  let m = cv.imread(full);
+  if (quad){ const w = warp(m, quad); m.delete(); m = w; }
+  m = limitSize(m, S.split ? 3000 : 2200);
+  m = rotateMat(m, S.rot);
+  m = applyFilter(m);
+  const mats = S.split ? splitMat(m) : [m];
+  return mats.map(x => { const c = document.createElement('canvas'); cv.imshow(c, x); x.delete(); return c; });
+}
+function rotateCanvasFallback(c, deg){
+  if (!deg) return c;
+  const o = document.createElement('canvas');
+  o.width = deg === 180 ? c.width : c.height; o.height = deg === 180 ? c.height : c.width;
+  const x = o.getContext('2d'); x.translate(o.width/2, o.height/2); x.rotate(deg * Math.PI / 180);
+  x.drawImage(c, -c.width/2, -c.height/2); return o;
+}
+const toBlob = (c, q) => new Promise(r => c.toBlob(r, 'image/jpeg', q));
+const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+/* ---------- capture ---------- */
+async function capture(){
+  if (busy || !video.videoWidth) return;
+  busy = true; flash(); beep(); setStatus('processing');
+  try {
+    const full = document.createElement('canvas');
+    full.width = video.videoWidth; full.height = video.videoHeight;
+    full.getContext('2d').drawImage(video, 0, 0);
+    await nextFrame();
+    let outs;
+    try { outs = cvReady ? processCV(full) : [rotateCanvasFallback(full, S.rot)]; }
+    catch(e){ console.error(e); outs = [rotateCanvasFallback(full, S.rot)]; }
+    for (const c of outs){
+      const blob = await toBlob(c, S.filter === 'bw' ? 0.75 : 0.82);
+      if (!blob) continue;
+      const p = {id:nextId(), blob, w:c.width, h:c.height};
+      pages.push(p); await dbPut(p);
+    }
+    renderStrip();
+  } finally {
+    busy = false; prev = null; stableSince = 0; doneAt = performance.now();
+    setStatus('done');
+  }
+}
+
+/* ---------- viewer ---------- */
+let viewing = null;
+function openViewer(p){
+  viewing = p;
+  $('#vImg').src = p.url;
+  $('#vTitle').textContent = 'صفحة ' + (pages.indexOf(p) + 1) + ' من ' + pages.length;
+  $('#viewer').hidden = false;
+}
+$('#vClose').onclick = () => { $('#viewer').hidden = true; viewing = null; };
+$('#vDel').onclick = async () => {
+  if (!viewing) return;
+  const i = pages.indexOf(viewing);
+  if (i > -1){ pages.splice(i, 1); await dbDel(viewing.id); URL.revokeObjectURL(viewing.url); }
+  $('#viewer').hidden = true; viewing = null; renderStrip();
+};
+$('#vRot').onclick = async () => {
+  if (!viewing) return;
+  const img = new Image(); img.src = viewing.url; await img.decode();
+  const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext('2d').drawImage(img, 0, 0);
+  const r = rotateCanvasFallback(c, 90);
+  const blob = await toBlob(r, 0.85);
+  URL.revokeObjectURL(viewing.url);
+  viewing.blob = blob; viewing.w = r.width; viewing.h = r.height; viewing.url = URL.createObjectURL(blob);
+  await dbPut(viewing);
+  $('#vImg').src = viewing.url; renderStrip();
+};
+
+/* ---------- export ---------- */
+function safeName(n){ return (n || 'book').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'book'; }
+function openExport(){
+  $('#expName').value = $('#bookName').value || '';
+  $('#expInfo').textContent = pages.length ? (pages.length + ' صفحة جاهزة') : 'لسه ما فيش صفحات';
+  $('#expBtn').disabled = !pages.length;
+  $('#newBook').textContent = 'كتاب جديد'; $('#newBook').dataset.c = '';
+  $('#expSheet').hidden = false;
+}
+async function exportPDF(){
+  if (!pages.length) return;
+  if (!window.jspdf){ $('#expInfo').textContent = 'مكتبة الـ PDF ما اتحملتش. اتأكد من النت وافتح الصفحة تاني.'; return; }
+  const {jsPDF} = window.jspdf;
+  const btn = $('#expBtn'), bar = $('#expProg'), fill = bar.querySelector('i');
+  btn.disabled = true; bar.hidden = false;
+  try {
+    let doc = null;
+    for (let i = 0; i < pages.length; i++){
+      const p = pages[i];
+      const W = 595.28, H = W * p.h / p.w, ori = H >= W ? 'p' : 'l';
+      const bytes = new Uint8Array(await p.blob.arrayBuffer());
+      if (!doc) doc = new jsPDF({unit:'pt', format:[W, H], orientation:ori, compress:true});
+      else doc.addPage([W, H], ori);
+      doc.addImage(bytes, 'JPEG', 0, 0, W, H, undefined, 'NONE');
+      fill.style.width = Math.round((i+1) / pages.length * 100) + '%';
+      $('#expInfo').textContent = 'بيجمع صفحة ' + (i+1) + ' من ' + pages.length;
+      if (i % 5 === 4) await nextFrame();
+    }
+    const name = safeName($('#expName').value);
+    $('#bookName').value = $('#expName').value;
+    doc.save(name + '.pdf');
+    $('#expInfo').textContent = 'اتحفظ ' + name + '.pdf (' + pages.length + ' صفحة) في التنزيلات.';
+  } catch(e){
+    console.error(e);
+    $('#expInfo').textContent = 'حصلت مشكلة وهو بيعمل الـ PDF: ' + (e.message || e);
+  } finally { btn.disabled = false; }
+}
+async function newBook(){
+  const b = $('#newBook');
+  if (b.dataset.c !== '1'){ b.dataset.c = '1'; b.textContent = 'متأكد؟ هيمسح الصفحات'; return; }
+  pages.forEach(p => p.url && URL.revokeObjectURL(p.url));
+  pages = []; await dbClear(); renderStrip();
+  $('#bookName').value = ''; $('#expName').value = '';
+  $('#expSheet').hidden = true; armed = false;
+}
+
+/* ---------- settings UI ---------- */
+function bindSeg(id, key, cast){
+  const seg = $(id);
+  const paint = () => seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(cast(b.dataset.v) === S[key])));
+  seg.onclick = e => { const b = e.target.closest('button'); if (!b) return; S[key] = cast(b.dataset.v); saveS(); paint(); };
+  paint();
+}
+function initSettings(){
+  const delay = $('#delay'), sens = $('#sens');
+  delay.value = S.delay; sens.value = S.sens;
+  const paint = () => { $('#delayV').textContent = (S.delay/1000).toFixed(1) + ' ث'; $('#sensV').textContent = S.sens; };
+  delay.oninput = () => { S.delay = +delay.value; saveS(); paint(); };
+  sens.oninput = () => { S.sens = +sens.value; saveS(); paint(); };
+  paint();
+  bindSeg('#filterSeg', 'filter', String);
+  bindSeg('#rotSeg', 'rot', Number);
+  bindSeg('#orderSeg', 'order', String);
+  [['#split','split'],['#needQuad','needQuad'],['#crop','crop']].forEach(([id, k]) => {
+    const el = $(id); el.checked = !!S[k];
+    el.onchange = () => { S[k] = el.checked; saveS(); $('#orderRow').hidden = !S.split; };
+  });
+  $('#orderRow').hidden = !S.split;
+  paintAuto();
+}
+function paintAuto(){
+  const b = $('#autoBtn');
+  b.classList.toggle('on', S.auto);
+  b.textContent = S.auto ? 'تلقائي: شغّال' : 'تلقائي: واقف';
+}
+
+/* ---------- wiring ---------- */
+$('#startBtn').onclick = async () => {
+  try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+  const ok = await startCam();
+  if (!ok) return;
+  $('#start').hidden = true; $('#cam').hidden = false;
+  renderStrip();
+  setInterval(motionTick, 120);
+  setInterval(detectTick, 450);
+};
+$('#shutter').onclick = () => { armed = false; capture(); };
+$('#autoBtn').onclick = () => { S.auto = !S.auto; saveS(); paintAuto(); armed = false; };
+$('#setBtn').onclick = () => { $('#setSheet').hidden = false; };
+$('#setClose').onclick = () => { $('#setSheet').hidden = true; };
+$('#setSheet').onclick = e => { if (e.target.id === 'setSheet') $('#setSheet').hidden = true; };
+$('#doneBtn').onclick = openExport;
+$('#expBack').onclick = () => { $('#expSheet').hidden = true; };
+$('#expSheet').onclick = e => { if (e.target.id === 'expSheet') $('#expSheet').hidden = true; };
+$('#expBtn').onclick = exportPDF;
+$('#newBook').onclick = newBook;
+$('#torchBtn').onclick = async () => {
+  torchOn = !torchOn;
+  try { await track.applyConstraints({advanced:[{torch:torchOn}]}); } catch(e){ torchOn = false; }
+  $('#torchBtn').classList.toggle('on', torchOn);
+};
+try { const n = localStorage.getItem('bookscan.name'); if (n) $('#bookName').value = n; } catch(e) {}
+$('#bookName').oninput = () => { try { localStorage.setItem('bookscan.name', $('#bookName').value); } catch(e) {} };
+
+(async () => {
+  initSettings();
+  loadCV();
+  await openDB();
+  const saved = (await dbAll()) || [];
+  saved.sort((a, b) => a.id - b.id);
+  pages = saved.map(p => ({id:p.id, blob:p.blob, w:p.w, h:p.h}));
+  if (pages.length){
+    const r = $('#resume'); r.hidden = false;
+    r.textContent = 'في ' + pages.length + ' صفحة متصورة من قبل. هتكمّل عليهم، أو امسحهم من «خلّصت ← كتاب جديد».';
+  }
+})();
+</script>
+</body>
+</html>
