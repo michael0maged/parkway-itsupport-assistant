@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>2ماسح الكتب</title>
+<title>3ماسح الكتب</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -67,6 +67,10 @@ input[type=text]{background:var(--panel);border:1px solid var(--line);color:var(
 #toprt{display:flex;gap:8px}
 #cvnote{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:.8rem;color:var(--muted);background:rgba(18,17,16,.8);padding:4px 10px;border-radius:999px;white-space:nowrap}
 
+#zoomRow{display:flex;align-items:center;gap:10px;font-size:.85rem;color:var(--muted)}
+#zoomRow input{flex:1;accent-color:var(--accent)}
+#zoomRow em{font-style:normal;color:var(--fg);min-width:3.2em;text-align:center;font-variant-numeric:tabular-nums}
+#camName{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(18,17,16,.85);padding:10px 16px;border-radius:12px;font-weight:600}
 #bottom{background:var(--bg);border-top:1px solid var(--line);padding:10px max(12px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));display:grid;gap:10px}
 #strip{display:flex;gap:8px;overflow-x:auto;min-height:64px;padding-bottom:2px;scrollbar-width:none}
 #strip::-webkit-scrollbar{display:none}
@@ -138,12 +142,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div id="pill" data-s="ready"><span id="dot"></span><span id="stxt">جاهز — حط الكتاب</span><span id="bar"><i></i></span></div>
       <div id="toprt">
         <button class="iconbtn" id="torchBtn" hidden aria-label="الفلاش">⚡</button>
+        <button class="iconbtn" id="camSw" hidden aria-label="بدّل الكاميرا">⟳</button>
         <button class="iconbtn" id="setBtn" aria-label="الإعدادات">⚙</button>
       </div>
     </div>
     <div id="cvnote">بيجهّز القص التلقائي…</div>
+    <div id="camName" hidden></div>
   </div>
   <div id="bottom">
+    <div id="zoomRow" hidden><span>زووم</span><input type="range" id="zoom" aria-label="زووم"><em id="zoomV"></em></div>
     <div id="strip"><span class="empty">الصفحات اللي تتصور هتظهر هنا</span></div>
     <div id="controls">
       <button id="autoBtn" class="on">تلقائي: شغّال</button>
@@ -314,6 +321,61 @@ function loadCV(i){
 
 /* ---------- camera ---------- */
 let stream = null, track = null, torchOn = false, wake = null;
+// 4:3 uses the whole sensor; a 16:9 4K request makes many phones crop (looks zoomed in).
+function camConstraints(deviceId){
+  const v = {width:{ideal:2560}, height:{ideal:1920}, aspectRatio:{ideal:4/3}};
+  if (deviceId) v.deviceId = {exact:deviceId}; else v.facingMode = {ideal:'environment'};
+  return {audio:false, video:v};
+}
+let backCams = [], camIdx = 0;
+async function openStream(deviceId){
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia(camConstraints(deviceId));
+  video.srcObject = stream;
+  try { await video.play(); } catch(e) {}
+  track = stream.getVideoTracks()[0];
+  torchOn = false; $('#torchBtn').classList.remove('on');
+  let caps = {};
+  try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch(e) {}
+  $('#torchBtn').hidden = !caps.torch;
+  if (caps.focusMode && caps.focusMode.includes('continuous'))
+    track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
+  setupZoom(caps);
+  prev = null;
+}
+function setupZoom(caps){
+  const row = $('#zoomRow'), z = $('#zoom');
+  if (!caps.zoom || caps.zoom.max <= caps.zoom.min){ row.hidden = true; return; }
+  z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, 4); z.step = caps.zoom.step || 0.1;
+  let want = Math.max(caps.zoom.min, 1);
+  try { const sv = parseFloat(localStorage.getItem('bookscan.zoom')); if (sv >= caps.zoom.min && sv <= caps.zoom.max) want = sv; } catch(e) {}
+  z.value = want; applyZoom(want);
+  row.hidden = false;
+}
+function applyZoom(v){
+  $('#zoomV').textContent = (+v).toFixed(1) + '×';
+  if (track) track.applyConstraints({advanced:[{zoom:+v}]}).catch(()=>{});
+}
+async function listBackCams(){
+  try {
+    const all = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const back = all.filter(d => !/front|user|أمام/i.test(d.label));
+    backCams = back.length ? back : all;
+    const cur = track && track.getSettings ? track.getSettings().deviceId : null;
+    camIdx = Math.max(0, backCams.findIndex(d => d.deviceId === cur));
+    $('#camSw').hidden = backCams.length < 2;
+  } catch(e) {}
+}
+async function switchCam(){
+  if (backCams.length < 2) return;
+  camIdx = (camIdx + 1) % backCams.length;
+  const id = backCams[camIdx].deviceId;
+  try { await openStream(id); try { localStorage.setItem('bookscan.cam', id); } catch(e) {} }
+  catch(e){ setStatus('ready'); }
+  $('#camName').textContent = 'كاميرا ' + (camIdx + 1) + ' من ' + backCams.length;
+  $('#camName').hidden = false;
+  clearTimeout(switchCam.t); switchCam.t = setTimeout(() => { $('#camName').hidden = true; }, 2000);
+}
 async function startCam(){
   const err = $('#err');
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
@@ -321,25 +383,17 @@ async function startCam(){
     err.textContent = 'الكاميرا محتاجة الصفحة تتفتح من رابط https (زي GitHub Pages). افتحها من الرابط مش من ملف على الموبايل.';
     return false;
   }
+  let saved = null;
+  try { saved = localStorage.getItem('bookscan.cam'); } catch(e) {}
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio:false,
-      video:{facingMode:{ideal:'environment'}, width:{ideal:3840}, height:{ideal:2160}}
-    });
+    try { await openStream(saved); }
+    catch(e){ if (!saved) throw e; await openStream(null); }
   } catch(e){
     err.hidden = false;
     err.textContent = 'مش قادر يفتح الكاميرا. اسمح للمتصفح باستخدام الكاميرا وجرّب تاني. (' + (e.name || e) + ')';
     return false;
   }
-  video.srcObject = stream;
-  try { await video.play(); } catch(e) {}
-  track = stream.getVideoTracks()[0];
-  try {
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
-    if (caps.torch) $('#torchBtn').hidden = false;
-    if (caps.focusMode && caps.focusMode.includes('continuous'))
-      track.applyConstraints({advanced:[{focusMode:'continuous'}]}).catch(()=>{});
-  } catch(e) {}
+  listBackCams();
   keepAwake();
   return true;
 }
@@ -796,6 +850,8 @@ $('#startBtn').onclick = async () => {
 };
 $('#shutter').onclick = () => { armed = false; capture(); };
 $('#autoBtn').onclick = () => { S.auto = !S.auto; saveS(); paintAuto(); armed = false; };
+$('#camSw').onclick = switchCam;
+$('#zoom').oninput = e => { applyZoom(e.target.value); try { localStorage.setItem('bookscan.zoom', e.target.value); } catch(err) {} };
 $('#setBtn').onclick = () => { $('#setSheet').hidden = false; };
 $('#setClose').onclick = () => { $('#setSheet').hidden = true; };
 $('#setSheet').onclick = e => { if (e.target.id === 'setSheet') $('#setSheet').hidden = true; };
