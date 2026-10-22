@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>6ماسح الكتب</title>
+<title>ماسح الكتب7</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -59,7 +59,9 @@ input[type=text]{background:var(--panel);border:1px solid var(--line);color:var(
 #dot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--muted)}
 #pill[data-s=moving] #dot{background:var(--warn)}
 #pill[data-s=settling] #dot{background:var(--accent)}
-#pill[data-s=done] #dot,#pill[data-s=ready] #dot{background:var(--ok)}
+#pill[data-s=done] #dot,#pill[data-s=ready] #dot,#pill[data-s=fixed] #dot{background:var(--ok)}
+#pill[data-s=reject]{border-color:var(--warn);color:var(--warn)}
+#pill[data-s=reject] #dot{background:var(--warn)}
 #bar{width:46px;height:4px;border-radius:2px;background:var(--line);overflow:hidden;flex:none}
 #bar i{display:block;height:100%;width:0;background:var(--accent)}
 .iconbtn{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:rgba(18,17,16,.82);display:grid;place-items:center;font-size:1.1rem}
@@ -77,6 +79,7 @@ input[type=text]{background:var(--panel);border:1px solid var(--line);color:var(
 #strip .empty{color:var(--muted);font-size:.9rem;align-self:center}
 .th{position:relative;flex:none;width:46px;height:62px;border-radius:6px;overflow:hidden;border:1px solid var(--line);padding:0;background:#000}
 .th img{width:100%;height:100%;object-fit:cover;display:block}
+.th.fix{border-color:var(--accent);border-width:2px}
 .th span{position:absolute;bottom:0;inset-inline:0;background:rgba(0,0,0,.65);font-size:.7rem;text-align:center;font-variant-numeric:tabular-nums}
 #controls{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
 #autoBtn{justify-self:start;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:10px 14px;font-weight:600;font-size:.9rem}
@@ -124,7 +127,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <ul class="steps">
     <li><b>1</b><span>ثبّت الموبايل على ستاند أو كوباية، والكاميرا شايفة الصفحة كلها.</span></li>
     <li><b>2</b><span>قلّب الصفحة وشيل إيدك. هتسمع صوت لما تتصور.</span></li>
-    <li><b>3</b><span>في الآخر دوس «خلّصت» واحفظ الكتاب PDF واحد.</span></li>
+    <li><b>3</b><span>الإطار الأخضر معناه إنه شايف الكتاب صح. لو أحمر، عدّل مكان الكتاب. لو صفحة ما اتصورتش صح هتسمع صوت غلط ومش هتتحفظ.</span></li>
+    <li><b>4</b><span>في الآخر دوس «خلّصت» واحفظ الكتاب PDF واحد.</span></li>
   </ul>
   <label class="f" for="bookName">اسم الكتاب
     <input type="text" id="bookName" placeholder="مثال: Science Grade 5" autocomplete="off">
@@ -279,7 +283,7 @@ function tx(mode, fn){
     } catch(e) { res(null); }
   });
 }
-const dbPut = p => tx('readwrite', st => st.put({id:p.id, blob:p.blob, w:p.w, h:p.h}));
+const dbPut = p => tx('readwrite', st => st.put({id:p.id, blob:p.blob, w:p.w, h:p.h, fix:!!p.fix}));
 const dbDel = id => tx('readwrite', st => st.delete(id));
 const dbClear = () => tx('readwrite', st => st.clear());
 const dbAll = () => tx('readonly', st => st.getAll());
@@ -304,6 +308,7 @@ function thumb(p, i){
   b.innerHTML = '<img alt=""><span></span>';
   b.querySelector('img').src = p.url;
   b.querySelector('span').textContent = i + 1;
+  if (p.fix){ b.classList.add('fix'); b.title = 'اتعدّل القص تلقائي — راجعها'; }
   b.onclick = () => openViewer(p);
   return b;
 }
@@ -431,6 +436,15 @@ function beep(){
   } catch(e) {}
   try { navigator.vibrate && navigator.vibrate(50); } catch(e) {}
 }
+function errBeep(){
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'square'; o.frequency.value = 220; g.gain.value = 0.08;
+    o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.35);
+  } catch(e) {}
+  try { navigator.vibrate && navigator.vibrate([80, 60, 80]); } catch(e) {}
+}
 function flash(){
   const f = $('#flash'); f.classList.add('on');
   requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on')));
@@ -442,6 +456,8 @@ const STATUS = {
   processing:'بيقص ويظبط…',
   done:'اتصورت ✓ قلّب اللي بعدها',
   noquad:'مش شايف حدود الورقة',
+  reject:'✗ ما اتحفظتش — الكتاب مش باين كله. عدّله وصوّر تاني',
+  fixed:'اتصورت ✓ (اتعدّل القص على مكان الكتاب)',
   paused:'التلقائي واقف — صوّر بالزرار'
 };
 let lastStatus = '';
@@ -475,7 +491,7 @@ function motionTick(){
   if (!stableSince) stableSince = now;
 
   if (!S.auto){ setStatus('paused'); return; }
-  if (!armed){ if (now - doneAt > 1500) setStatus('ready'); return; }
+  if (!armed){ if (now - doneAt > (lastStatus === 'reject' ? 4000 : 1500)) setStatus('ready'); return; }
   const t = now - stableSince;
   if (S.needQuad && cvReady && S.crop && !lastQuad){ setStatus('noquad'); return; }
   if (t >= S.delay){ armed = false; capture(); }
@@ -492,6 +508,7 @@ function detectTick(){
   let q = null;
   try { q = detectQuad(dc); } catch(e) {}
   lastQuad = q ? q.map(p => ({x:p.x / dc.width, y:p.y / dc.height})) : null;
+  if (lastQuad && !quadOK(lastQuad, dc.width / dc.height)) lastQuad.bad = true;
   drawQuad(lastQuad);
 }
 function drawQuad(q){
@@ -508,8 +525,9 @@ function drawQuad(q){
   octx.beginPath();
   q.forEach((p, i) => { const x = ox + p.x*vw*s, y = oy + p.y*vh*s; i ? octx.lineTo(x, y) : octx.moveTo(x, y); });
   octx.closePath();
-  octx.fillStyle = 'rgba(242,179,61,.14)'; octx.fill();
-  octx.lineWidth = 3; octx.strokeStyle = '#f2b33d'; octx.stroke();
+  const bad = q.bad;
+  octx.fillStyle = bad ? 'rgba(255,122,89,.16)' : 'rgba(76,195,138,.14)'; octx.fill();
+  octx.lineWidth = 3; octx.strokeStyle = bad ? '#ff7a59' : '#4cc38a'; octx.stroke();
 }
 
 /* ---------- OpenCV image processing ---------- */
@@ -554,8 +572,137 @@ function largestContour(bin, minArea){
   cs.delete(); h.delete();
   return q;
 }
-// Paper = bright and not colorful. Works for open books on a desk.
+// ---- Book detection: learn the table's colors from the frame edges, the book is everything
+// that is not table-colored and not connected to the edge. Then fit straight lines to each side.
+function kmeans3(pts, k){
+  const n = pts.length / 3, idx = [];
+  for (let i = 0; i < n; i++) idx.push(i);
+  idx.sort((a, b) => (pts[a*3]+pts[a*3+1]+pts[a*3+2]) - (pts[b*3]+pts[b*3+1]+pts[b*3+2]));
+  const c = [];
+  for (let j = 0; j < k; j++){ const p = idx[Math.floor((j + 0.5) * n / k)]; c.push([pts[p*3], pts[p*3+1], pts[p*3+2]]); }
+  const as = new Uint8Array(n);
+  for (let it = 0; it < 8; it++){
+    const sum = c.map(() => [0, 0, 0, 0]);
+    for (let i = 0; i < n; i++){
+      let best = 0, bd = Infinity;
+      for (let j = 0; j < k; j++){ const dr = pts[i*3]-c[j][0], dg = pts[i*3+1]-c[j][1], db = pts[i*3+2]-c[j][2], dd = dr*dr+dg*dg+db*db; if (dd < bd){ bd = dd; best = j; } }
+      as[i] = best; const s = sum[best]; s[0] += pts[i*3]; s[1] += pts[i*3+1]; s[2] += pts[i*3+2]; s[3]++;
+    }
+    for (let j = 0; j < k; j++) if (sum[j][3]) c[j] = [sum[j][0]/sum[j][3], sum[j][1]/sum[j][3], sum[j][2]/sum[j][3]];
+  }
+  const dists = c.map(() => []);
+  for (let i = 0; i < n; i++){ const j = as[i]; dists[j].push(Math.hypot(pts[i*3]-c[j][0], pts[i*3+1]-c[j][1], pts[i*3+2]-c[j][2])); }
+  return c.map((cc, j) => {
+    const ds = dists[j].sort((a, b) => a - b);
+    return {c:cc, spread: ds.length ? ds[ds.length >> 1] : 0, count: ds.length};
+  });
+}
+function fitLinePts(P){ // PCA line: returns {x0,y0,vx,vy}
+  let mx = 0, my = 0; for (const p of P){ mx += p[0]; my += p[1]; } mx /= P.length; my /= P.length;
+  let sxx = 0, syy = 0, sxy = 0; for (const p of P){ const dx = p[0]-mx, dy = p[1]-my; sxx += dx*dx; syy += dy*dy; sxy += dx*dy; }
+  const th = 0.5 * Math.atan2(2*sxy, sxx - syy);
+  return {x0:mx, y0:my, vx:Math.cos(th), vy:Math.sin(th)};
+}
+function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]
+  const lines = [];
+  for (let i = 0; i < 4; i++){
+    const a = q[i], b = q[(i+1) % 4], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
+    if (L < 5) return q;
+    const nx = -dy / L, ny = dx / L;
+    let P = [];
+    for (const p of pts){
+      const t = ((p[0]-a.x)*dx + (p[1]-a.y)*dy) / (L*L), dist = Math.abs((p[0]-a.x)*nx + (p[1]-a.y)*ny);
+      if (t > 0.1 && t < 0.9 && dist < 0.08 * L) P.push(p);
+    }
+    if (P.length < 10) return q;
+    let ln = null;
+    for (let it = 0; it < 4; it++){
+      ln = fitLinePts(P);
+      const r = P.map(p => Math.abs((p[0]-ln.x0)*(-ln.vy) + (p[1]-ln.y0)*ln.vx));
+      const sorted = r.slice().sort((u, v) => u - v), cut = sorted[Math.floor(sorted.length * 0.6)] + 1;
+      const NP = P.filter((p, k) => r[k] <= cut);
+      if (NP.length < 10) break; P = NP;
+    }
+    lines.push(ln);
+  }
+  const out = [];
+  for (let i = 0; i < 4; i++){
+    const A = lines[(i+3) % 4], B = lines[i];
+    const det = A.vx * (-B.vy) - (-B.vx) * A.vy;
+    if (Math.abs(det) < 1e-6) return q;
+    const s = ((B.x0 - A.x0) * (-B.vy) - (-B.vx) * (B.y0 - A.y0)) / det;
+    out.push({x: A.x0 + s * A.vx, y: A.y0 + s * A.vy});
+  }
+  return orderPts(out);
+}
 function detectQuad(canvas){
+  let q = null;
+  try { q = detectQuadBg(canvas); } catch(e){ console.warn(e); }
+  if (!q){ try { q = detectQuadPaper(canvas); } catch(e) {} }
+  return q;
+}
+function detectQuadBg(canvas){
+  const W = canvas.width, H = canvas.height, N = W * H;
+  const src = cv.imread(canvas), bl = new cv.Mat();
+  cv.GaussianBlur(src, bl, new cv.Size(5, 5), 0); src.delete();
+  const d = bl.data, b = Math.max(3, Math.floor(Math.min(W, H) * 0.03));
+  const ring = [];
+  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2){
+    if (x >= b && x < W - b && y >= b && y < H - b) continue;
+    const i = (y*W + x) * 4; ring.push(d[i], d[i+1], d[i+2]);
+  }
+  const total = ring.length / 3;
+  const cl = kmeans3(ring, 4).filter(c => c.count > total * 0.03);
+  const bgLike = new Uint8Array(N);
+  for (let i = 0; i < N; i++){
+    const r = d[i*4], g = d[i*4+1], bb = d[i*4+2];
+    for (const c of cl){
+      const thr = Math.max(28, c.spread * 3);
+      const dr = r - c.c[0], dg = g - c.c[1], db = bb - c.c[2];
+      if (dr*dr + dg*dg + db*db < thr*thr){ bgLike[i] = 1; break; }
+    }
+  }
+  bl.delete();
+  // keep only background connected to the frame edge
+  const seen = new Uint8Array(N), queue = new Int32Array(N); let qh = 0, qt = 0;
+  const push = i => { if (bgLike[i] && !seen[i]){ seen[i] = 1; queue[qt++] = i; } };
+  for (let x = 0; x < W; x++){ push(x); push((H-1)*W + x); }
+  for (let y = 0; y < H; y++){ push(y*W); push(y*W + W - 1); }
+  while (qh < qt){
+    const i = queue[qh++], x = i % W;
+    if (x > 0) push(i - 1); if (x < W - 1) push(i + 1);
+    if (i >= W) push(i - W); if (i < N - W) push(i + W);
+  }
+  const m = new cv.Mat(H, W, cv.CV_8UC1), md = m.data;
+  let book = 0;
+  for (let i = 0; i < N; i++){ md[i] = seen[i] ? 0 : 255; if (!seen[i]) book++; }
+  if (book > N * 0.97 || book < N * 0.15){ m.delete(); return null; } // book fills the frame or not found
+  const k9 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
+  const k11 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(11, 11));
+  cv.morphologyEx(m, m, cv.MORPH_OPEN, k9);
+  cv.morphologyEx(m, m, cv.MORPH_CLOSE, k11);
+  k9.delete(); k11.delete();
+  const cs = new cv.MatVector(), hier = new cv.Mat();
+  cv.findContours(m, cs, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE);
+  m.delete(); hier.delete();
+  let bi = -1, ba = N * 0.15;
+  for (let i = 0; i < cs.size(); i++){ const c = cs.get(i), a = cv.contourArea(c); if (a > ba){ ba = a; bi = i; } c.delete(); }
+  let q = null;
+  if (bi > -1){
+    const c = cs.get(bi);
+    const q0 = quadFromContour(c);
+    if (q0){
+      const pts = []; const cd = c.data32S;
+      for (let i = 0; i < cd.length; i += 2) pts.push([cd[i], cd[i+1]]);
+      q = refineQuad(orderPts(q0), pts);
+    }
+    c.delete();
+  }
+  cs.delete();
+  return q;
+}
+// Fallback: paper = bright and not colorful.
+function detectQuadPaper(canvas){
   const src = cv.imread(canvas), rgb = new cv.Mat(), hsv = new cv.Mat(), ch = new cv.MatVector();
   const score = new cv.Mat(), k1 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(9, 9));
   const k2 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
@@ -814,16 +961,99 @@ function trimBackground(m, bg){
   const out = m.roi(new cv.Rect(x0, y0, x1 - x0, y1 - y0)).clone(); m.delete();
   return out;
 }
+// ---- Automatic checking of every page outline ----
+// A good outline is a proper rectangle seen in perspective. On a stand the book barely moves,
+// so the last good outlines are the reference: a detection that disagrees with them is replaced.
+let refQuads = [], refAspect = 0;  // normalized quads of recent good captures
+function quadOK(qn, ar){
+  if (!qn) return false;
+  ar = ar || 1;
+  const q = qn.map(p => ({x:p.x * ar, y:p.y}));
+  const ang = i => {
+    const a = q[(i+3) % 4], b = q[i], c = q[(i+1) % 4];
+    const v1x = a.x - b.x, v1y = a.y - b.y, v2x = c.x - b.x, v2y = c.y - b.y;
+    return Math.acos(Math.max(-1, Math.min(1, (v1x*v2x + v1y*v2y) / (Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y) || 1)))) * 180 / Math.PI;
+  };
+  for (let i = 0; i < 4; i++){ const A = ang(i); if (A < 65 || A > 115) return false; }
+  const L = i => Math.hypot(q[(i+1)%4].x - q[i].x, q[(i+1)%4].y - q[i].y);
+  const r1 = L(0) / L(2), r2 = L(1) / L(3);
+  if (r1 < 0.75 || r1 > 1.33 || r2 < 0.75 || r2 > 1.33) return false;
+  let area = 0; for (let i = 0; i < 4; i++){ const a = q[i], b = q[(i+1)%4]; area += a.x*b.y - b.x*a.y; }
+  area = Math.abs(area) / 2 / ar;
+  return area > 0.15 && area < 0.985;
+}
+const qAspect = q => (Math.hypot(q[1].x-q[0].x, q[1].y-q[0].y) + Math.hypot(q[2].x-q[3].x, q[2].y-q[3].y)) /
+                     (Math.hypot(q[3].x-q[0].x, q[3].y-q[0].y) + Math.hypot(q[2].x-q[1].x, q[2].y-q[1].y));
+const qDiff = (a, b) => Math.max(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y)));
+function refQuad(){
+  if (!refQuads.length) return null;
+  const med = arr => arr.slice().sort((u, v) => u - v)[arr.length >> 1];
+  return [0, 1, 2, 3].map(i => ({x: med(refQuads.map(q => q[i].x)), y: med(refQuads.map(q => q[i].y))}));
+}
+function remember(q, frameAspect){
+  if (refQuads.length && Math.abs(refQuads.frameAspect - frameAspect) > 0.02) refQuads = [];
+  refQuads.push(q); if (refQuads.length > 3) refQuads.shift();
+  refQuads.frameAspect = frameAspect;
+  refAspect = qAspect(refQuad());
+}
+// Returns {quad (normalized), status: 'ok' | 'ref' | 'none'}
+let pending = null; // a new book position seen once; confirmed when the next capture agrees
+function chooseQuad(found, frameAspect){
+  const ref = (refQuads.length && Math.abs(refQuads.frameAspect - frameAspect) <= 0.02) ? refQuad() : null;
+  const ok = quadOK(found, frameAspect);
+  if (!ref){
+    if (ok){ remember(found, frameAspect); return {quad:found, status:'ok'}; }
+    return {quad:null, status:'none'};
+  }
+  if (ok && qDiff(found, ref) < 0.02){ pending = null; remember(found, frameAspect); return {quad:found, status:'ok'}; }
+  if (ok){
+    const ar = qAspect(found) / refAspect;
+    if (ar > 0.94 && ar < 1.06){
+      if (pending && qDiff(found, pending) < 0.02){   // two captures agree: the book really moved
+        refQuads = []; remember(pending, frameAspect); remember(found, frameAspect); pending = null;
+        return {quad:found, status:'ok'};
+      }
+      pending = found;
+    }
+  }
+  return {quad:ref, status:'ref'};
+}
+// Sharpness of the photo (variance of the Laplacian on the small copy)
+let sharpHist = [];
+function sharpness(canvas){
+  const m = cv.imread(canvas), g = new cv.Mat(), l = new cv.Mat(), mean = new cv.Mat(), sd = new cv.Mat();
+  cv.cvtColor(m, g, cv.COLOR_RGBA2GRAY); cv.Laplacian(g, l, cv.CV_64F);
+  cv.meanStdDev(l, mean, sd); const v = sd.data64F[0] ** 2;
+  m.delete(); g.delete(); l.delete(); mean.delete(); sd.delete();
+  return v;
+}
+let lastCheck = {status:'ok', sharp:0};
 function processCV(full){
   let quad = null, bg = null;
+  lastCheck = {status:'ok', sharp:0, blurry:false};
+  const sc = 500 / Math.max(full.width, full.height);
+  const sm = document.createElement('canvas');
+  sm.width = Math.round(full.width * sc); sm.height = Math.round(full.height * sc);
+  sm.getContext('2d').drawImage(full, 0, 0, sm.width, sm.height);
+  try {
+    const v = sharpness(sm); lastCheck.sharp = v;
+    if (sharpHist.length >= 3){
+      const med = sharpHist.slice().sort((a, b) => a - b)[sharpHist.length >> 1];
+      lastCheck.blurry = v < med * 0.55;
+    }
+    if (!lastCheck.blurry){ sharpHist.push(v); if (sharpHist.length > 15) sharpHist.shift(); }
+  } catch(e) {}
   if (S.crop){
-    const sc = 500 / Math.max(full.width, full.height);
-    const sm = document.createElement('canvas');
-    sm.width = Math.round(full.width * sc); sm.height = Math.round(full.height * sc);
-    sm.getContext('2d').drawImage(full, 0, 0, sm.width, sm.height);
-    quad = detectQuad(sm);
-    if (quad){ try { bg = outsideColor(sm, quad); } catch(e) {} }
-    if (quad) quad = quad.map(p => ({x:p.x / sc, y:p.y / sc}));
+    const found = detectQuad(sm);
+    const norm = found ? found.map(p => ({x:p.x / sm.width, y:p.y / sm.height})) : null;
+    const pick = chooseQuad(norm, sm.width / sm.height);
+    lastCheck.status = pick.status;
+    if (pick.status === 'none' && !S.forceSave) return null;   // nothing trustworthy: don't save
+    if (pick.quad){
+      const qs = pick.quad.map(p => ({x:p.x * sm.width, y:p.y * sm.height}));
+      try { bg = outsideColor(sm, qs); } catch(e) {}
+      quad = pick.quad.map(p => ({x:p.x * full.width, y:p.y * full.height}));
+    }
   }
   let m = cv.imread(full);
   if (quad){ const w = warp(m, quad); m.delete(); m = w; m = trimBackground(m, bg); }
@@ -882,25 +1112,41 @@ async function grabFrame(){
   }
   return videoFrame();
 }
-async function capture(){
+let finalStatus = 'done';
+async function capture(manual){
   if (busy || !video.videoWidth) return;
-  busy = true; flash(); beep(); setStatus('processing');
+  busy = true; flash(); setStatus('processing'); finalStatus = 'done';
+  S.forceSave = !!manual;
   try {
-    const full = await grabFrame();
+    let full = await grabFrame();
     await nextFrame();
     let outs;
-    try { outs = cvReady ? processCV(full) : [rotateCanvasFallback(full, S.rot)]; }
+    try {
+      outs = cvReady ? processCV(full) : [rotateCanvasFallback(full, S.rot)];
+      if (cvReady && lastCheck.blurry){       // shaky: take it again once
+        await new Promise(r => setTimeout(r, 400));
+        full = await grabFrame(); await nextFrame();
+        outs = processCV(full);
+      }
+    }
     catch(e){ console.error(e); outs = [rotateCanvasFallback(full, S.rot)]; }
+    if (!outs){
+      errBeep(); finalStatus = 'reject';
+      return;
+    }
+    if (lastCheck.status === 'ref') finalStatus = 'fixed';
     for (const c of outs){
       const blob = await toBlob(c, S.filter === 'bw' ? 0.8 : 0.85);
       if (!blob) continue;
-      const p = {id:nextId(), blob, w:c.width, h:c.height};
+      const p = {id:nextId(), blob, w:c.width, h:c.height, fix: lastCheck.status === 'ref'};
       pages.push(p); await dbPut(p);
     }
     renderStrip();
+    beep();
   } finally {
     busy = false; prev = null; stableSince = 0; doneAt = performance.now();
-    setStatus('done');
+    S.forceSave = false;
+    setStatus(finalStatus);
   }
 }
 
@@ -1004,6 +1250,7 @@ async function newBook(){
   if (b.dataset.c !== '1'){ b.dataset.c = '1'; b.textContent = 'متأكد؟ هيمسح الصفحات'; return; }
   pages.forEach(p => p.url && URL.revokeObjectURL(p.url));
   pages = []; await dbClear(); renderStrip();
+  refQuads = []; sharpHist = []; pending = null;
   $('#bookName').value = ''; $('#expName').value = '';
   $('#expSheet').hidden = true; armed = false;
 }
@@ -1048,7 +1295,7 @@ $('#startBtn').onclick = async () => {
   setInterval(motionTick, 120);
   setInterval(detectTick, 450);
 };
-$('#shutter').onclick = () => { armed = false; capture(); };
+$('#shutter').onclick = () => { armed = false; capture(true); };
 $('#autoBtn').onclick = () => { S.auto = !S.auto; saveS(); paintAuto(); armed = false; };
 $('#camSw').onclick = switchCam;
 $('#zoom').oninput = e => { applyZoom(e.target.value); try { localStorage.setItem('bookscan.zoom', e.target.value); } catch(err) {} };
@@ -1074,7 +1321,7 @@ $('#bookName').oninput = () => { try { localStorage.setItem('bookscan.name', $('
   await openDB();
   const saved = (await dbAll()) || [];
   saved.sort((a, b) => a.id - b.id);
-  pages = saved.map(p => ({id:p.id, blob:p.blob, w:p.w, h:p.h}));
+  pages = saved.map(p => ({id:p.id, blob:p.blob, w:p.w, h:p.h, fix:!!p.fix}));
   if (pages.length){
     const r = $('#resume'); r.hidden = false;
     r.textContent = 'في ' + pages.length + ' صفحة متصورة من قبل. هتكمّل عليهم، أو امسحهم من «خلّصت ← كتاب جديد».';
