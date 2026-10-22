@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>8ماسح الكتب</title>
+<title>9ماسح الكتب</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -82,7 +82,10 @@ input[type=text]{background:var(--panel);border:1px solid var(--line);color:var(
 .th.fix{border-color:var(--accent);border-width:2px}
 .th span{position:absolute;bottom:0;inset-inline:0;background:rgba(0,0,0,.65);font-size:.7rem;text-align:center;font-variant-numeric:tabular-nums}
 #controls{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
-#autoBtn{justify-self:start;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:10px 14px;font-weight:600;font-size:.9rem}
+.lbtns{justify-self:start;display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+#coverBtn{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:8px 14px;font-weight:600;font-size:.85rem}
+#coverBtn.on{background:var(--accent);color:#1b1306;border-color:var(--accent)}
+#autoBtn{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:10px 14px;font-weight:600;font-size:.9rem}
 #autoBtn.on{border-color:var(--ok);color:var(--ok)}
 #shutter{width:72px;height:72px;border-radius:50%;border:4px solid var(--fg);background:transparent;padding:5px}
 #shutter i{display:block;width:100%;height:100%;border-radius:50%;background:var(--fg)}
@@ -128,7 +131,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <li><b>1</b><span>ثبّت الموبايل على ستاند أو كوباية، والكاميرا شايفة الصفحة كلها.</span></li>
     <li><b>2</b><span>قلّب الصفحة وشيل إيدك. هتسمع صوت لما تتصور.</span></li>
     <li><b>3</b><span>الإطار الأخضر معناه إنه شايف الكتاب صح. لو أحمر، عدّل مكان الكتاب. لو صفحة ما اتصورتش صح هتسمع صوت غلط ومش هتتحفظ.</span></li>
-    <li><b>4</b><span>في الآخر دوس «خلّصت» واحفظ الكتاب PDF واحد.</span></li>
+    <li><b>4</b><span>قبل ما تصوّر الغلاف (أول الكتاب أو آخره) دوس زرار «غلاف»، علشان يتصور لوحده من غير ما يأثر على مقاس الصفحات.</span></li>
+    <li><b>5</b><span>في الآخر دوس «خلّصت» واحفظ الكتاب PDF واحد.</span></li>
   </ul>
   <label class="f" for="bookName">اسم الكتاب
     <input type="text" id="bookName" placeholder="مثال: Science Grade 5" autocomplete="off">
@@ -159,7 +163,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="zoomRow" hidden><span>زووم</span><input type="range" id="zoom" aria-label="زووم"><em id="zoomV"></em></div>
     <div id="strip"><span class="empty">الصفحات اللي تتصور هتظهر هنا</span></div>
     <div id="controls">
-      <button id="autoBtn" class="on">تلقائي: شغّال</button>
+      <div class="lbtns"><button id="autoBtn" class="on">تلقائي: شغّال</button><button id="coverBtn">غلاف</button></div>
       <button id="shutter" aria-label="صوّر دلوقتي"><i></i></button>
       <button id="doneBtn">خلّصت · <span id="cnt">0</span></button>
     </div>
@@ -603,8 +607,8 @@ function fitLinePts(P){ // PCA line: returns {x0,y0,vx,vy}
   const th = 0.5 * Math.atan2(2*sxy, sxx - syy);
   return {x0:mx, y0:my, vx:Math.cos(th), vy:Math.sin(th)};
 }
-function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]
-  const lines = [];
+function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]; result.fit = share of edge points on the 4 lines
+  const lines = []; let inTotal = 0;
   for (let i = 0; i < 4; i++){
     const a = q[i], b = q[(i+1) % 4], dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
     if (L < 5) return q;
@@ -629,6 +633,7 @@ function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]
     }
     if (!best || bestN < 10) return q;
     const inl = P.filter(p => Math.abs((p[0]-best.p1[0])*best.ux + (p[1]-best.p1[1])*best.uy) < tol);
+    inTotal += inl.length;
     const ln = fitLinePts(inl);
     lines.push(ln);
   }
@@ -640,7 +645,8 @@ function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]
     const s = ((B.x0 - A.x0) * (-B.vy) - (-B.vx) * (B.y0 - A.y0)) / det;
     out.push({x: A.x0 + s * A.vx, y: A.y0 + s * A.vy});
   }
-  return orderPts(out);
+  const r = orderPts(out); r.fit = inTotal / pts.length;
+  return r;
 }
 let lastPts = null; // contour points of the book from the last detection (canvas pixels)
 function detectQuad(canvas){
@@ -1007,32 +1013,41 @@ function remember(q, frameAspect){
 }
 // Returns {quad (normalized), status: 'ok' | 'snap' | 'ref' | 'none'}
 // snapFn(q) fits the saved outline to the book edges in the current photo.
-let pending = null; // a new book position seen once; confirmed when the next capture agrees
-function chooseQuad(found, frameAspect, snapFn, force){
-  const ref = (refQuads.length && Math.abs(refQuads.frameAspect - frameAspect) <= 0.02) ? refQuad() : null;
+const qArea = (q, ar) => { let a = 0; for (let i = 0; i < 4; i++){ const p = q[i], n = q[(i+1)%4]; a += p.x*ar*n.y - n.x*ar*p.y; } return Math.abs(a) / 2 / ar; };
+let pending = null; // a new book position/size seen once; confirmed when the next capture agrees
+function chooseQuad(found, frameAspect, snapFn, force, noRef){
   const ok = quadOK(found, frameAspect);
+  if (noRef) return ok ? {quad:found, status:'ok'} : (force ? {quad:found, status:'ref'} : {quad:null, status:'none'});
+  const ref = (refQuads.length && Math.abs(refQuads.frameAspect - frameAspect) <= 0.02) ? refQuad() : null;
   if (!ref){
     if (ok){ remember(found, frameAspect); return {quad:found, status:'ok'}; }
     return {quad:null, status:'none'};
   }
   if (ok && qDiff(found, ref) < 0.02){ pending = null; remember(found, frameAspect); return {quad:found, status:'ok'}; }
+  const fit = found && found.fit !== undefined ? found.fit : 0;
+  const sizeRatio = ok ? qArea(found, frameAspect) / qArea(ref, frameAspect) : 1;
+  const ar = ok ? qAspect(found) / refAspect : 1;
+  const sameShape = ok && ar > 0.94 && ar < 1.06 && sizeRatio > 0.9 && sizeRatio < 1.1;
   if (ok){
-    const ar = qAspect(found) / refAspect;
-    if (ar > 0.94 && ar < 1.06){
-      if (pending && qDiff(found, pending) < 0.02){   // two captures agree: the book really moved
-        refQuads = []; remember(pending, frameAspect); remember(found, frameAspect); pending = null;
-        return {quad:found, status:'ok'};
-      }
-      pending = found;
+    // two captures agree on a new place or size: the book really moved / changed (e.g. cover → pages)
+    if (pending && qDiff(found, pending) < 0.02){
+      refQuads = []; remember(pending, frameAspect); remember(found, frameAspect); pending = null;
+      return {quad:found, status:'ok'};
     }
+    // a very clean outline of a different size: trust it right away
+    if (!sameShape && fit >= 0.55){
+      refQuads = []; remember(found, frameAspect); pending = null;
+      return {quad:found, status:'ok'};
+    }
+    pending = found;
   }
   // the detection disagrees: fit the saved outline to the edges seen in this photo
   const snapped = snapFn ? snapFn(ref) : null;
-  if (snapped && quadOK(snapped, frameAspect) && qDiff(snapped, ref) < 0.05){
+  if (snapped && quadOK(snapped, frameAspect) && qDiff(snapped, ref) < 0.05 && (snapped.fit || 0) >= Math.max(0.4, fit + 0.03)){
     const r = qAspect(snapped) / refAspect;
     if (r > 0.96 && r < 1.04){ remember(snapped, frameAspect); return {quad:snapped, status:'snap'}; }
   }
-  if (force) return {quad:ref, status:'ref'};
+  if (force) return {quad: ok ? found : ref, status:'ref'};
   return {quad:null, status:'none'};
 }
 // Sharpness of the photo (variance of the Laplacian on the small copy)
@@ -1044,6 +1059,7 @@ function sharpness(canvas){
   m.delete(); g.delete(); l.delete(); mean.delete(); sd.delete();
   return v;
 }
+let areaHist = [], coverNext = false;
 // Fast checks right after the photo: sharpness + where the book is. Returns null = don't save.
 function planCapture(full, force){
   const plan = {quad:null, bg:null, status:'ok', blurry:false};
@@ -1063,13 +1079,20 @@ function planCapture(full, force){
   const found = detectQuad(sm);
   const W = sm.width, H = sm.height, pts = lastPts;
   const norm = found ? found.map(p => ({x:p.x / W, y:p.y / H})) : null;
+  if (norm) norm.fit = found.fit || 0;
   const snapFn = pts ? (q => {
     const r = refineQuad(q.map(p => ({x:p.x * W, y:p.y * H})), pts);
-    return r.map(p => ({x:p.x / W, y:p.y / H}));
+    const n = r.map(p => ({x:p.x / W, y:p.y / H})); n.fit = r.fit || 0; return n;
   }) : null;
-  const pick = chooseQuad(norm, W / H, snapFn, force);
+  const cover = coverNext;
+  const pick = chooseQuad(norm, W / H, snapFn, force, cover);
   plan.status = pick.status;
   if (!pick.quad) return force ? plan : null;
+  // single page (cover, or something about half the size of the usual spread): never split it
+  const area = qArea(pick.quad, W / H);
+  if (!cover && pick.status !== 'ref'){ areaHist.push(area); if (areaHist.length > 8) areaHist.shift(); }
+  const usual = areaHist.length ? Math.max(...areaHist) : area;
+  plan.single = cover || area < usual * 0.65;
   const qs = pick.quad.map(p => ({x:p.x * W, y:p.y * H}));
   try { plan.bg = outsideColor(sm, qs); } catch(e) {}
   plan.quad = pick.quad.map(p => ({x:p.x * full.width, y:p.y * full.height}));
@@ -1081,10 +1104,11 @@ function finishCapture(full, plan){
   if (plan.quad){ const w = warp(m, plan.quad); m.delete(); m = w; m = trimBackground(m, plan.bg); }
   m = limitSize(m, 3800);
   m = rotateMat(m, S.rot);
-  if (S.split && m.rows > m.cols * 1.1) m = rotateMat(m, 270);
-  const spine = S.split ? findSpine(m) : 0;
+  const split = S.split && !plan.single;
+  if (split && m.rows > m.cols * 1.1) m = rotateMat(m, 270);
+  const spine = split ? findSpine(m) : 0;
   m = applyFilter(m);
-  const mats = S.split ? splitAt(m, spine) : [m];
+  const mats = split ? splitAt(m, spine) : [m];
   return mats.map(x => { const c = document.createElement('canvas'); cv.imshow(c, x); x.delete(); return c; });
 }
 function rotateCanvasFallback(c, deg){
@@ -1178,6 +1202,7 @@ async function capture(manual){
       if (!plan){ errBeep(); finalStatus = 'reject'; return; }
       if (plan.status === 'ref') finalStatus = 'fixed';
     }
+    if (coverNext){ coverNext = false; paintCover(); }
     beep();                                   // photo is good: turn the page now
     enqueue(full, plan);
   } catch(e){ console.error(e); errBeep(); finalStatus = 'reject'; }
@@ -1288,7 +1313,7 @@ async function newBook(){
   if (b.dataset.c !== '1'){ b.dataset.c = '1'; b.textContent = 'متأكد؟ هيمسح الصفحات'; return; }
   pages.forEach(p => p.url && URL.revokeObjectURL(p.url));
   pages = []; await dbClear(); renderStrip();
-  refQuads = []; sharpHist = []; pending = null;
+  refQuads = []; sharpHist = []; pending = null; areaHist = []; coverNext = false; paintCover();
   $('#bookName').value = ''; $('#expName').value = '';
   $('#expSheet').hidden = true; armed = false;
 }
@@ -1334,6 +1359,8 @@ $('#startBtn').onclick = async () => {
   setInterval(detectTick, 450);
 };
 $('#shutter').onclick = () => { armed = false; capture(true); };
+function paintCover(){ const b = $('#coverBtn'); b.classList.toggle('on', coverNext); b.textContent = coverNext ? 'الصورة الجاية غلاف ✓' : 'غلاف'; }
+$('#coverBtn').onclick = () => { coverNext = !coverNext; paintCover(); };
 $('#autoBtn').onclick = () => { S.auto = !S.auto; saveS(); paintAuto(); armed = false; };
 $('#camSw').onclick = switchCam;
 $('#zoom').oninput = e => { applyZoom(e.target.value); try { localStorage.setItem('bookscan.zoom', e.target.value); } catch(err) {} };
