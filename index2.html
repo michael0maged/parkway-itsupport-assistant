@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>9ماسح الكتب</title>
+<title>ماسح الكتب10</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -1060,6 +1060,59 @@ function sharpness(canvas){
   return v;
 }
 let areaHist = [], coverNext = false;
+// Remove the stack of page edges that shows at the outer sides of an open book.
+// The stack is a band of thin lines parallel to the edge, starting right at the edge, with no text or drawings.
+let lastStackLeft = 0;
+function trimStack(m){
+  const S0 = 1200 / Math.max(m.cols, m.rows), w = Math.round(m.cols * Math.min(1, S0)), h = Math.round(m.rows * Math.min(1, S0));
+  const sm = new cv.Mat(), g = new cv.Mat(), dx = new cv.Mat(), dy = new cv.Mat();
+  cv.resize(m, sm, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+  const ch = sm.channels();
+  if (ch === 1) sm.copyTo(g); else cv.cvtColor(sm, g, ch === 4 ? cv.COLOR_RGBA2GRAY : cv.COLOR_RGB2GRAY);
+  cv.GaussianBlur(g, g, new cv.Size(3, 3), 0);
+  cv.Sobel(g, dx, cv.CV_32F, 1, 0, 3); cv.Sobel(g, dy, cv.CV_32F, 0, 1, 3);
+  const X = dx.data32F, Y = dy.data32F;
+  sm.delete(); g.delete();
+  const THR = 15;
+  // depthLen: size across the edge; runLen: size along the edge; at(k, j) = pixel index at depth k, position j
+  function cut(depthLen, runLen, at, alongIsX){
+    const D = Math.max(6, Math.floor(depthLen * 0.05)), j0 = Math.floor(runLen * 0.1), j1 = Math.floor(runLen * 0.9);
+    const frac = new Float32Array(D + 4);
+    for (let k = 0; k < D + 4 && k < depthLen; k++){
+      let n = 0;
+      for (let j = j0; j < j1; j++){
+        const i = at(k, j), a = Math.abs(alongIsX ? Y[i] : X[i]), b = Math.abs(alongIsX ? X[i] : Y[i]);
+        if (a > THR && a > 2 * b) n++;               // edge running parallel to the side
+      }
+      frac[k] = n / (j1 - j0);
+    }
+    let start = -1; for (let k = 0; k < Math.min(10, D); k++) if (frac[k] > 0.1){ start = k; break; }
+    if (start < 0) return 0;
+    let k = start, gap = 0, peak = 0;
+    while (k < D){ if (frac[k] > 0.1){ gap = 0; peak = Math.max(peak, frac[k]); } else if (++gap > 3) break; k++; }
+    const end = k - gap;
+    if (k >= D || peak < 0.45) return 0;           // ran into page content, or no clear lines
+    let n = 0, tot = 0;
+    for (let kk = 0; kk < end; kk++) for (let j = j0; j < j1; j++){
+      const i = at(kk, j), a = Math.abs(alongIsX ? X[i] : Y[i]), b = Math.abs(alongIsX ? Y[i] : X[i]);
+      if (a > THR && a > 2 * b) n++; tot++;        // edges across the band = text or drawings
+    }
+    if (tot && n / tot > 0.03) return 0;
+    return end + 2;
+  }
+  const l = cut(w, h, (k, j) => j*w + k, false);
+  const r = cut(w, h, (k, j) => j*w + (w - 1 - k), false);
+  const t = cut(h, w, (k, j) => k*w + j, true);
+  const b = cut(h, w, (k, j) => (h - 1 - k)*w + j, true);
+  dx.delete(); dy.delete();
+  if (!(l || r || t || b)) return m;
+  const f = m.cols / w;
+  const x0 = Math.round(l * f), y0 = Math.round(t * f), x1 = m.cols - Math.round(r * f), y1 = m.rows - Math.round(b * f);
+  if (x1 - x0 < m.cols * 0.8 || y1 - y0 < m.rows * 0.8) return m;
+  const out = m.roi(new cv.Rect(x0, y0, x1 - x0, y1 - y0)).clone(); m.delete();
+  lastStackLeft = x0;
+  return out;
+}
 // Fast checks right after the photo: sharpness + where the book is. Returns null = don't save.
 function planCapture(full, force){
   const plan = {quad:null, bg:null, status:'ok', blurry:false};
@@ -1108,7 +1161,9 @@ function finishCapture(full, plan){
   if (split && m.rows > m.cols * 1.1) m = rotateMat(m, 270);
   const spine = split ? findSpine(m) : 0;
   m = applyFilter(m);
-  const mats = split ? splitAt(m, spine) : [m];
+  let sp = spine;
+  if (plan.quad){ lastStackLeft = 0; m = trimStack(m); sp = Math.max(1, spine - lastStackLeft); }
+  const mats = split ? splitAt(m, sp) : [m];
   return mats.map(x => { const c = document.createElement('canvas'); cv.imshow(c, x); x.delete(); return c; });
 }
 function rotateCanvasFallback(c, deg){
