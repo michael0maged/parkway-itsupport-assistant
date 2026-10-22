@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>3ماسح الكتب</title>
+<title>ماسح الكتب</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -200,6 +200,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     </div>
     <label class="sw" for="needQuad">ما يصوّرش غير لما يلاقي حدود الورقة <input type="checkbox" id="needQuad"></label>
     <label class="sw" for="crop">قص وتعديل الميل تلقائي <input type="checkbox" id="crop"></label>
+    <label class="sw" for="hires">تصوير بأعلى دقة (أوضح، بس أبطأ شوية) <input type="checkbox" id="hires"></label>
     <button class="btn ghost" id="setClose">تمام</button>
   </div>
 </div>
@@ -241,6 +242,8 @@ const video = $('#video'), overlay = $('#overlay'), octx = overlay.getContext('2
 /* ---------- settings ---------- */
 const S = {delay:800, sens:5, filter:'enhance', rot:0, split:false, order:'ltr', needQuad:false, crop:true, auto:true};
 try { Object.assign(S, JSON.parse(localStorage.getItem('bookscan.settings') || '{}')); } catch(e) {}
+if (S.v !== 4){ S.filter = 'enhance'; S.hires = true; S.v = 4; }
+if (S.hires === undefined) S.hires = true;
 function saveS(){ try { localStorage.setItem('bookscan.settings', JSON.stringify(S)); } catch(e) {} }
 
 /* ---------- storage (IndexedDB) ---------- */
@@ -598,24 +601,41 @@ function rotateMat(m, deg){
 }
 // "Magic color": divide each channel by its estimated paper background.
 // Removes shadows and yellow light, paper turns white, ink keeps its color.
-function magicColor(m){ // m: RGBA → returns RGB
+function magicColor(m){ // m: RGBA → returns RGB, paper white, ink deep, like a copier scan
   const rgb = new cv.Mat(); cv.cvtColor(m, rgb, cv.COLOR_RGBA2RGB); m.delete();
-  const small = new cv.Mat(), bgSmall = new cv.Mat(), bg = new cv.Mat(), out = new cv.Mat();
-  const chs = new cv.MatVector(), bgs = new cv.MatVector();
-  const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
-  cv.resize(rgb, small, new cv.Size(Math.max(1, Math.round(rgb.cols/4)), Math.max(1, Math.round(rgb.rows/4))), 0, 0, cv.INTER_AREA);
-  cv.split(small, chs);
-  for (let i = 0; i < 3; i++){
-    const c = chs.get(i);
-    cv.dilate(c, c, k);
-    cv.medianBlur(c, c, 21);
-    bgs.push_back(c); c.delete();
+  const W = rgb.cols, H = rgb.rows, sc = 96 / Math.min(W, H);
+  const small = new cv.Mat(), bg = new cv.Mat();
+  const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+  cv.resize(rgb, small, new cv.Size(Math.max(1, Math.round(W*sc)), Math.max(1, Math.round(H*sc))), 0, 0, cv.INTER_AREA);
+  cv.dilate(small, small, k);           // remove thin text
+  cv.medianBlur(small, small, 31);      // big window: keeps shaded boxes, removes lighting
+  cv.GaussianBlur(small, small, new cv.Size(0, 0), 3);
+  cv.resize(small, bg, new cv.Size(W, H), 0, 0, cv.INTER_LINEAR);
+  small.delete(); k.delete();
+  const sd = rgb.data, bd = bg.data, n = sd.length;
+  // 1) divide by paper background
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i += 3){
+    let l = 0;
+    for (let c = 0; c < 3; c++){ const v = Math.min(255, (sd[i+c] * 255 / (bd[i+c] || 1)) | 0); sd[i+c] = v; l += v; }
+    hist[(l / 3) | 0]++;
   }
-  cv.merge(bgs, bgSmall);
-  cv.resize(bgSmall, bg, new cv.Size(rgb.cols, rgb.rows), 0, 0, cv.INTER_LINEAR);
-  cv.divide(rgb, bg, out, 255);
-  out.convertTo(out, -1, 1.15, -30);
-  rgb.delete(); small.delete(); bgSmall.delete(); bg.delete(); chs.delete(); bgs.delete(); k.delete();
+  bg.delete();
+  // 2) levels: black point = darkest 0.5%, white point 245, gentle gamma for deeper ink
+  let acc = 0, lo = 0; const target = (n / 3) * 0.005;
+  for (; lo < 255; lo++){ acc += hist[lo]; if (acc >= target) break; }
+  lo = Math.min(lo, 150);
+  const lut = new Uint8Array(256), hi = 245;
+  for (let v = 0; v < 256; v++){
+    const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+    lut[v] = Math.round(255 * Math.pow(t, 1.25));
+  }
+  for (let i = 0; i < n; i++) sd[i] = lut[sd[i]];
+  // 3) light sharpening
+  const bl = new cv.Mat(), out = new cv.Mat();
+  cv.GaussianBlur(rgb, bl, new cv.Size(0, 0), 1.2);
+  cv.addWeighted(rgb, 1.6, bl, -0.6, 0, out);
+  rgb.delete(); bl.delete();
   return out;
 }
 function applyFilter(m){
@@ -692,7 +712,7 @@ function processCV(full){
   }
   let m = cv.imread(full);
   if (quad){ const w = warp(m, quad); m.delete(); m = w; }
-  m = limitSize(m, S.split ? 3000 : 2200);
+  m = limitSize(m, S.split ? 3600 : 2800);
   m = rotateMat(m, S.rot);
   const spine = S.split ? findSpine(m) : 0;
   m = applyFilter(m);
@@ -710,19 +730,52 @@ const toBlob = (c, q) => new Promise(r => c.toBlob(r, 'image/jpeg', q));
 const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
 /* ---------- capture ---------- */
+// Full camera photo (much sharper than a video frame). Falls back to the video frame.
+let imgCap = null, hiresFails = 0;
+function videoFrame(){
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  return c;
+}
+async function grabFrame(){
+  if (S.hires && hiresFails < 3 && window.ImageCapture && track && track.readyState === 'live'){
+    try {
+      if (!imgCap || imgCap.track !== track) imgCap = new ImageCapture(track);
+      const shot = imgCap.takePhoto({fillLightMode: torchOn ? 'flash' : 'off'}).catch(() => imgCap.takePhoto());
+      const blob = await Promise.race([shot, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))]);
+      let bmp = await createImageBitmap(blob, {imageOrientation:'from-image'});
+      let w = bmp.width, h = bmp.height;
+      // match the preview's orientation if the photo came out sideways
+      const vPortrait = video.videoHeight > video.videoWidth, pPortrait = h > w;
+      const turn = vPortrait !== pPortrait;
+      const MAX = 3200, r = Math.min(1, MAX / Math.max(w, h));
+      const c = document.createElement('canvas');
+      const dw = Math.round(w * r), dh = Math.round(h * r);
+      c.width = turn ? dh : dw; c.height = turn ? dw : dh;
+      const x = c.getContext('2d');
+      if (turn){ x.translate(c.width, 0); x.rotate(Math.PI / 2); }
+      x.drawImage(bmp, 0, 0, dw, dh);
+      bmp.close && bmp.close();
+      hiresFails = 0;
+      // torch may switch off after a photo on some phones
+      if (torchOn) track.applyConstraints({advanced:[{torch:true}]}).catch(()=>{});
+      return c;
+    } catch(e){ console.warn('takePhoto failed', e); hiresFails++; }
+  }
+  return videoFrame();
+}
 async function capture(){
   if (busy || !video.videoWidth) return;
   busy = true; flash(); beep(); setStatus('processing');
   try {
-    const full = document.createElement('canvas');
-    full.width = video.videoWidth; full.height = video.videoHeight;
-    full.getContext('2d').drawImage(video, 0, 0);
+    const full = await grabFrame();
     await nextFrame();
     let outs;
     try { outs = cvReady ? processCV(full) : [rotateCanvasFallback(full, S.rot)]; }
     catch(e){ console.error(e); outs = [rotateCanvasFallback(full, S.rot)]; }
     for (const c of outs){
-      const blob = await toBlob(c, S.filter === 'bw' ? 0.75 : 0.82);
+      const blob = await toBlob(c, S.filter === 'bw' ? 0.8 : 0.85);
       if (!blob) continue;
       const p = {id:nextId(), blob, w:c.width, h:c.height};
       pages.push(p); await dbPut(p);
@@ -825,7 +878,7 @@ function initSettings(){
   bindSeg('#filterSeg', 'filter', String);
   bindSeg('#rotSeg', 'rot', Number);
   bindSeg('#orderSeg', 'order', String);
-  [['#split','split'],['#needQuad','needQuad'],['#crop','crop']].forEach(([id, k]) => {
+  [['#split','split'],['#needQuad','needQuad'],['#crop','crop'],['#hires','hires']].forEach(([id, k]) => {
     const el = $(id); el.checked = !!S[k];
     el.onchange = () => { S[k] = el.checked; saveS(); $('#orderRow').hidden = !S.split; };
   });
