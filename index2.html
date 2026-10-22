@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>ماسح الكتب5</title>
+<title>6ماسح الكتب</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -103,12 +103,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .sw input{width:22px;height:22px;accent-color:var(--accent)}
 .prog{height:8px;border-radius:4px;background:var(--bg);overflow:hidden}
 .prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .15s}
+.exprev{display:grid;place-items:center;height:150px;background:var(--bg);border-radius:12px;overflow:hidden}
+.exprev img{max-width:130px;max-height:130px;transition:transform .2s}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 
 /* viewer */
 #viewer{position:fixed;inset:0;background:#000;z-index:30;display:flex;flex-direction:column}
 #viewer img{flex:1;min-height:0;width:100%;object-fit:contain}
-#viewer .vbar{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:12px max(14px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));background:var(--bg)}
+#viewer .vbar{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;padding:12px max(14px,env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));background:var(--bg)}
 #viewer .vtop{padding:calc(env(safe-area-inset-top) + 12px) 16px 10px;background:var(--bg);font-weight:600;font-variant-numeric:tabular-nums}
 @media (prefers-reduced-motion:reduce){#flash{transition:none}.prog i{transition:none}}
 </style>
@@ -213,6 +215,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <input type="text" id="expName" autocomplete="off">
     </label>
     <div id="expInfo" style="color:var(--muted)"></div>
+    <div class="row">
+      <div class="lbl">اتجاه الصفحات في الـ PDF</div>
+      <div class="exprev"><img id="expPrev" alt="أول صفحة"></div>
+      <div class="seg" id="expRotSeg">
+        <button data-v="0">زي ما هي</button><button data-v="270">لف لليسار ↺</button><button data-v="90">لف لليمين ↻</button><button data-v="180">اقلبها</button>
+      </div>
+      <small>لو الصفحات طالعة بالعرض أو مقلوبة، اختار اللفة اللي تعدّل أول صفحة. هتتطبق على كل الصفحات.</small>
+    </div>
     <div class="prog" id="expProg" hidden><i></i></div>
     <button class="btn primary" id="expBtn">احفظ PDF</button>
     <div class="two">
@@ -229,7 +239,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <img id="vImg" alt="">
   <div class="vbar">
     <button class="btn ghost" id="vClose">رجوع</button>
+    <button class="btn ghost" id="vPrev" aria-label="حرّكها قبل">→ قبل</button>
     <button class="btn ghost" id="vRot">لف 90°</button>
+    <button class="btn ghost" id="vNext" aria-label="حرّكها بعد">بعد ←</button>
     <button class="btn danger" id="vDel">امسح الصفحة</button>
   </div>
 </div>
@@ -753,20 +765,72 @@ function splitAt(m, x){
   L = trimInner(L, 'right'); R = trimInner(R, 'left');
   return S.order === 'rtl' ? [R, L] : [L, R];
 }
+// Color of the table/background: median of the pixels outside the detected page.
+function outsideColor(canvas, q){
+  const x = canvas.getContext('2d'), d = x.getImageData(0, 0, canvas.width, canvas.height).data;
+  const inside = (px, py) => { // point in convex quad
+    let sign = 0;
+    for (let i = 0; i < 4; i++){
+      const a = q[i], b = q[(i+1) % 4];
+      const c = (b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x);
+      if (c !== 0){ if (sign && Math.sign(c) !== sign) return false; sign = Math.sign(c); }
+    }
+    return true;
+  };
+  const R = [], G = [], B = [];
+  for (let py = 0; py < canvas.height; py += 2) for (let px = 0; px < canvas.width; px += 2){
+    if (inside(px, py)) continue;
+    const i = (py * canvas.width + px) * 4; R.push(d[i]); G.push(d[i+1]); B.push(d[i+2]);
+  }
+  if (R.length < 200) return null;
+  const med = a => a.sort((u, v) => u - v)[a.length >> 1];
+  return [med(R), med(G), med(B)];
+}
+// Cut leftover table strips off the edges of the warped page (up to 6% per side).
+function trimBackground(m, bg){
+  if (!bg) return m;
+  const W = 300, H = Math.max(1, Math.round(m.rows * W / m.cols));
+  const sm = new cv.Mat(), rgb = new cv.Mat();
+  cv.resize(m, sm, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
+  cv.cvtColor(sm, rgb, cv.COLOR_RGBA2RGB); sm.delete();
+  const d = rgb.data, near = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++){
+    const dr = d[i*3] - bg[0], dg = d[i*3+1] - bg[1], db = d[i*3+2] - bg[2];
+    near[i] = (dr*dr + dg*dg + db*db) < 45*45 ? 1 : 0;
+  }
+  rgb.delete();
+  const rowF = y => { let s = 0; for (let x = 0; x < W; x++) s += near[y*W + x]; return s / W; };
+  const colF = x => { let s = 0; for (let y = 0; y < H; y++) s += near[y*W + x]; return s / H; };
+  const lim = f => Math.round(f * 0.06);
+  let t = 0, b = 0, l = 0, r = 0;
+  while (t < lim(H) && rowF(t) > 0.4) t++;
+  while (b < lim(H) && rowF(H - 1 - b) > 0.4) b++;
+  while (l < lim(W) && colF(l) > 0.4) l++;
+  while (r < lim(W) && colF(W - 1 - r) > 0.4) r++;
+  if (!(t || b || l || r)) return m;
+  const k = m.cols / W, pad = v => v ? Math.round((v + 1) * k) : 0;
+  const x0 = pad(l), y0 = pad(t), x1 = m.cols - pad(r), y1 = m.rows - pad(b);
+  if (x1 - x0 < m.cols * 0.7 || y1 - y0 < m.rows * 0.7) return m;
+  const out = m.roi(new cv.Rect(x0, y0, x1 - x0, y1 - y0)).clone(); m.delete();
+  return out;
+}
 function processCV(full){
-  let quad = null;
+  let quad = null, bg = null;
   if (S.crop){
     const sc = 500 / Math.max(full.width, full.height);
     const sm = document.createElement('canvas');
     sm.width = Math.round(full.width * sc); sm.height = Math.round(full.height * sc);
     sm.getContext('2d').drawImage(full, 0, 0, sm.width, sm.height);
     quad = detectQuad(sm);
+    if (quad){ try { bg = outsideColor(sm, quad); } catch(e) {} }
     if (quad) quad = quad.map(p => ({x:p.x / sc, y:p.y / sc}));
   }
   let m = cv.imread(full);
-  if (quad){ const w = warp(m, quad); m.delete(); m = w; }
-  m = limitSize(m, S.split ? 3600 : 2800);
+  if (quad){ const w = warp(m, quad); m.delete(); m = w; m = trimBackground(m, bg); }
+  m = limitSize(m, 3800);
   m = rotateMat(m, S.rot);
+  // two pages side by side must be wider than tall before splitting
+  if (S.split && m.rows > m.cols * 1.1) m = rotateMat(m, 270);
   const spine = S.split ? findSpine(m) : 0;
   m = applyFilter(m);
   const mats = S.split ? splitAt(m, spine) : [m];
@@ -802,7 +866,7 @@ async function grabFrame(){
       // match the preview's orientation if the photo came out sideways
       const vPortrait = video.videoHeight > video.videoWidth, pPortrait = h > w;
       const turn = vPortrait !== pPortrait;
-      const MAX = 3200, r = Math.min(1, MAX / Math.max(w, h));
+      const MAX = 4200, r = Math.min(1, MAX / Math.max(w, h));
       const c = document.createElement('canvas');
       const dw = Math.round(w * r), dh = Math.round(h * r);
       c.width = turn ? dh : dw; c.height = turn ? dw : dh;
@@ -849,6 +913,19 @@ function openViewer(p){
   $('#viewer').hidden = false;
 }
 $('#vClose').onclick = () => { $('#viewer').hidden = true; viewing = null; };
+async function moveViewing(dir){
+  if (!viewing) return;
+  const i = pages.indexOf(viewing), j = i + dir;
+  if (i < 0 || j < 0 || j >= pages.length) return;
+  const other = pages[j];
+  [viewing.id, other.id] = [other.id, viewing.id];   // ids define the saved order
+  pages[i] = other; pages[j] = viewing;
+  await dbPut(viewing); await dbPut(other);
+  $('#vTitle').textContent = 'صفحة ' + (j + 1) + ' من ' + pages.length;
+  renderStrip();
+}
+$('#vPrev').onclick = () => moveViewing(-1);
+$('#vNext').onclick = () => moveViewing(1);
 $('#vDel').onclick = async () => {
   if (!viewing) return;
   const i = pages.indexOf(viewing);
@@ -870,7 +947,25 @@ $('#vRot').onclick = async () => {
 
 /* ---------- export ---------- */
 function safeName(n){ return (n || 'book').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'book'; }
+let expRot = 0;
+function paintExpRot(){
+  $('#expRotSeg').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.v === expRot)));
+  $('#expPrev').style.transform = 'rotate(' + expRot + 'deg)';
+}
+$('#expRotSeg').onclick = e => { const b = e.target.closest('button'); if (!b) return; expRot = +b.dataset.v; paintExpRot(); };
+async function rotatedBytes(p, deg){
+  if (!deg) return {bytes:new Uint8Array(await p.blob.arrayBuffer()), w:p.w, h:p.h};
+  const img = new Image(); const u = URL.createObjectURL(p.blob); img.src = u; await img.decode();
+  const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext('2d').drawImage(img, 0, 0); URL.revokeObjectURL(u);
+  const r = rotateCanvasFallback(c, deg);
+  const blob = await toBlob(r, 0.9);
+  return {bytes:new Uint8Array(await blob.arrayBuffer()), w:r.width, h:r.height};
+}
 function openExport(){
+  expRot = 0;
+  if (pages.length){ if (!pages[0].url) pages[0].url = URL.createObjectURL(pages[0].blob); $('#expPrev').src = pages[0].url; }
+  paintExpRot();
   $('#expName').value = $('#bookName').value || '';
   $('#expInfo').textContent = pages.length ? (pages.length + ' صفحة جاهزة') : 'لسه ما فيش صفحات';
   $('#expBtn').disabled = !pages.length;
@@ -886,9 +981,8 @@ async function exportPDF(){
   try {
     let doc = null;
     for (let i = 0; i < pages.length; i++){
-      const p = pages[i];
-      const W = 595.28, H = W * p.h / p.w, ori = H >= W ? 'p' : 'l';
-      const bytes = new Uint8Array(await p.blob.arrayBuffer());
+      const {bytes, w:pw, h:ph} = await rotatedBytes(pages[i], expRot);
+      const W = 595.28, H = W * ph / pw, ori = H >= W ? 'p' : 'l';
       if (!doc) doc = new jsPDF({unit:'pt', format:[W, H], orientation:ori, compress:true});
       else doc.addPage([W, H], ori);
       doc.addImage(bytes, 'JPEG', 0, 0, W, H, undefined, 'NONE');
