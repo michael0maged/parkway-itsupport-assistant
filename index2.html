@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>ماسح الكتب7</title>
+<title>8ماسح الكتب</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -299,7 +299,7 @@ function renderStrip(){
   if (!pages.length){ strip.innerHTML = '<span class="empty">الصفحات اللي تتصور هتظهر هنا</span>'; }
   pages.forEach((p, i) => strip.appendChild(thumb(p, i)));
   strip.scrollLeft = -strip.scrollWidth; // RTL: newest at the far end
-  $('#cnt').textContent = pages.length;
+  paintCount();
 }
 function thumb(p, i){
   const b = document.createElement('button');
@@ -615,14 +615,21 @@ function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]
       if (t > 0.1 && t < 0.9 && dist < 0.08 * L) P.push(p);
     }
     if (P.length < 10) return q;
-    let ln = null;
-    for (let it = 0; it < 4; it++){
-      ln = fitLinePts(P);
-      const r = P.map(p => Math.abs((p[0]-ln.x0)*(-ln.vy) + (p[1]-ln.y0)*ln.vx));
-      const sorted = r.slice().sort((u, v) => u - v), cut = sorted[Math.floor(sorted.length * 0.6)] + 1;
-      const NP = P.filter((p, k) => r[k] <= cut);
-      if (NP.length < 10) break; P = NP;
+    // RANSAC: the line through the most edge points wins (ignores hands, notches, leaks)
+    let seed = 12345 + i; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const tol = Math.max(1.5, L * 0.006);
+    let best = null, bestN = 0;
+    for (let it = 0; it < 250; it++){
+      const p1 = P[Math.floor(rnd() * P.length)], p2 = P[Math.floor(rnd() * P.length)];
+      const ex = p2[0] - p1[0], ey = p2[1] - p1[1], el = Math.hypot(ex, ey);
+      if (el < L * 0.2) continue;
+      const ux = -ey / el, uy = ex / el;
+      let n = 0; for (const p of P) if (Math.abs((p[0]-p1[0])*ux + (p[1]-p1[1])*uy) < tol) n++;
+      if (n > bestN){ bestN = n; best = {p1, ux, uy}; }
     }
+    if (!best || bestN < 10) return q;
+    const inl = P.filter(p => Math.abs((p[0]-best.p1[0])*best.ux + (p[1]-best.p1[1])*best.uy) < tol);
+    const ln = fitLinePts(inl);
     lines.push(ln);
   }
   const out = [];
@@ -635,8 +642,9 @@ function refineQuad(q, pts){ // q ordered, pts: [[x,y],...]
   }
   return orderPts(out);
 }
+let lastPts = null; // contour points of the book from the last detection (canvas pixels)
 function detectQuad(canvas){
-  let q = null;
+  let q = null; lastPts = null;
   try { q = detectQuadBg(canvas); } catch(e){ console.warn(e); }
   if (!q){ try { q = detectQuadPaper(canvas); } catch(e) {} }
   return q;
@@ -694,6 +702,7 @@ function detectQuadBg(canvas){
     if (q0){
       const pts = []; const cd = c.data32S;
       for (let i = 0; i < cd.length; i += 2) pts.push([cd[i], cd[i+1]]);
+      lastPts = pts;
       q = refineQuad(orderPts(q0), pts);
     }
     c.delete();
@@ -996,9 +1005,10 @@ function remember(q, frameAspect){
   refQuads.frameAspect = frameAspect;
   refAspect = qAspect(refQuad());
 }
-// Returns {quad (normalized), status: 'ok' | 'ref' | 'none'}
+// Returns {quad (normalized), status: 'ok' | 'snap' | 'ref' | 'none'}
+// snapFn(q) fits the saved outline to the book edges in the current photo.
 let pending = null; // a new book position seen once; confirmed when the next capture agrees
-function chooseQuad(found, frameAspect){
+function chooseQuad(found, frameAspect, snapFn, force){
   const ref = (refQuads.length && Math.abs(refQuads.frameAspect - frameAspect) <= 0.02) ? refQuad() : null;
   const ok = quadOK(found, frameAspect);
   if (!ref){
@@ -1016,7 +1026,14 @@ function chooseQuad(found, frameAspect){
       pending = found;
     }
   }
-  return {quad:ref, status:'ref'};
+  // the detection disagrees: fit the saved outline to the edges seen in this photo
+  const snapped = snapFn ? snapFn(ref) : null;
+  if (snapped && quadOK(snapped, frameAspect) && qDiff(snapped, ref) < 0.05){
+    const r = qAspect(snapped) / refAspect;
+    if (r > 0.96 && r < 1.04){ remember(snapped, frameAspect); return {quad:snapped, status:'snap'}; }
+  }
+  if (force) return {quad:ref, status:'ref'};
+  return {quad:null, status:'none'};
 }
 // Sharpness of the photo (variance of the Laplacian on the small copy)
 let sharpHist = [];
@@ -1027,39 +1044,43 @@ function sharpness(canvas){
   m.delete(); g.delete(); l.delete(); mean.delete(); sd.delete();
   return v;
 }
-let lastCheck = {status:'ok', sharp:0};
-function processCV(full){
-  let quad = null, bg = null;
-  lastCheck = {status:'ok', sharp:0, blurry:false};
+// Fast checks right after the photo: sharpness + where the book is. Returns null = don't save.
+function planCapture(full, force){
+  const plan = {quad:null, bg:null, status:'ok', blurry:false};
   const sc = 500 / Math.max(full.width, full.height);
   const sm = document.createElement('canvas');
   sm.width = Math.round(full.width * sc); sm.height = Math.round(full.height * sc);
   sm.getContext('2d').drawImage(full, 0, 0, sm.width, sm.height);
   try {
-    const v = sharpness(sm); lastCheck.sharp = v;
+    const v = sharpness(sm);
     if (sharpHist.length >= 3){
       const med = sharpHist.slice().sort((a, b) => a - b)[sharpHist.length >> 1];
-      lastCheck.blurry = v < med * 0.55;
+      plan.blurry = v < med * 0.55;
     }
-    if (!lastCheck.blurry){ sharpHist.push(v); if (sharpHist.length > 15) sharpHist.shift(); }
+    if (!plan.blurry){ sharpHist.push(v); if (sharpHist.length > 15) sharpHist.shift(); }
   } catch(e) {}
-  if (S.crop){
-    const found = detectQuad(sm);
-    const norm = found ? found.map(p => ({x:p.x / sm.width, y:p.y / sm.height})) : null;
-    const pick = chooseQuad(norm, sm.width / sm.height);
-    lastCheck.status = pick.status;
-    if (pick.status === 'none' && !S.forceSave) return null;   // nothing trustworthy: don't save
-    if (pick.quad){
-      const qs = pick.quad.map(p => ({x:p.x * sm.width, y:p.y * sm.height}));
-      try { bg = outsideColor(sm, qs); } catch(e) {}
-      quad = pick.quad.map(p => ({x:p.x * full.width, y:p.y * full.height}));
-    }
-  }
+  if (!S.crop) return plan;
+  const found = detectQuad(sm);
+  const W = sm.width, H = sm.height, pts = lastPts;
+  const norm = found ? found.map(p => ({x:p.x / W, y:p.y / H})) : null;
+  const snapFn = pts ? (q => {
+    const r = refineQuad(q.map(p => ({x:p.x * W, y:p.y * H})), pts);
+    return r.map(p => ({x:p.x / W, y:p.y / H}));
+  }) : null;
+  const pick = chooseQuad(norm, W / H, snapFn, force);
+  plan.status = pick.status;
+  if (!pick.quad) return force ? plan : null;
+  const qs = pick.quad.map(p => ({x:p.x * W, y:p.y * H}));
+  try { plan.bg = outsideColor(sm, qs); } catch(e) {}
+  plan.quad = pick.quad.map(p => ({x:p.x * full.width, y:p.y * full.height}));
+  return plan;
+}
+// Heavy part: straighten, crop, clean colors, split. Runs while the next page is being turned.
+function finishCapture(full, plan){
   let m = cv.imread(full);
-  if (quad){ const w = warp(m, quad); m.delete(); m = w; m = trimBackground(m, bg); }
+  if (plan.quad){ const w = warp(m, plan.quad); m.delete(); m = w; m = trimBackground(m, plan.bg); }
   m = limitSize(m, 3800);
   m = rotateMat(m, S.rot);
-  // two pages side by side must be wider than tall before splitting
   if (S.split && m.rows > m.cols * 1.1) m = rotateMat(m, 270);
   const spine = S.split ? findSpine(m) : 0;
   m = applyFilter(m);
@@ -1078,7 +1099,7 @@ const nextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(
 
 /* ---------- capture ---------- */
 // Full camera photo (much sharper than a video frame). Falls back to the video frame.
-let imgCap = null, hiresFails = 0;
+let imgCap = null, hiresFails = 0, photoW = 0;
 function videoFrame(){
   const c = document.createElement('canvas');
   c.width = video.videoWidth; c.height = video.videoHeight;
@@ -1088,8 +1109,16 @@ function videoFrame(){
 async function grabFrame(){
   if (S.hires && hiresFails < 3 && window.ImageCapture && track && track.readyState === 'live'){
     try {
-      if (!imgCap || imgCap.track !== track) imgCap = new ImageCapture(track);
-      const shot = imgCap.takePhoto({fillLightMode: torchOn ? 'flash' : 'off'}).catch(() => imgCap.takePhoto());
+      if (!imgCap || imgCap.track !== track){
+        imgCap = new ImageCapture(track); photoW = 0;
+        try {   // ask for ~4000px instead of 50MP: much faster to take and decode
+          const pc = await imgCap.getPhotoCapabilities();
+          if (pc && pc.imageWidth && pc.imageWidth.max) photoW = Math.max(pc.imageWidth.min || 0, Math.min(pc.imageWidth.max, 4032));
+        } catch(e) {}
+      }
+      const opts = {fillLightMode: torchOn ? 'flash' : 'off'};
+      if (photoW) opts.imageWidth = photoW;
+      const shot = imgCap.takePhoto(opts).catch(() => imgCap.takePhoto());
       const blob = await Promise.race([shot, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))]);
       let bmp = await createImageBitmap(blob, {imageOrientation:'from-image'});
       let w = bmp.width, h = bmp.height;
@@ -1113,39 +1142,47 @@ async function grabFrame(){
   return videoFrame();
 }
 let finalStatus = 'done';
+let work = Promise.resolve(), queued = 0;
+function paintCount(){ $('#cnt').textContent = pages.length + (queued ? ' +' + queued : ''); }
+function enqueue(full, plan){
+  queued++; paintCount();
+  work = work.then(async () => {
+    try {
+      let outs;
+      try { outs = (cvReady && plan) ? finishCapture(full, plan) : [rotateCanvasFallback(full, S.rot)]; }
+      catch(e){ console.error(e); outs = [rotateCanvasFallback(full, S.rot)]; }
+      for (const c of outs){
+        const blob = await toBlob(c, S.filter === 'bw' ? 0.8 : 0.85);
+        if (!blob) continue;
+        const p = {id:nextId(), blob, w:c.width, h:c.height, fix: !!plan && plan.status === 'ref'};
+        pages.push(p); await dbPut(p);
+      }
+    } finally { queued--; renderStrip(); paintCount(); }
+  });
+  return work;
+}
 async function capture(manual){
   if (busy || !video.videoWidth) return;
   busy = true; flash(); setStatus('processing'); finalStatus = 'done';
-  S.forceSave = !!manual;
   try {
+    if (queued >= 2) await work;              // keep memory in check
     let full = await grabFrame();
-    await nextFrame();
-    let outs;
-    try {
-      outs = cvReady ? processCV(full) : [rotateCanvasFallback(full, S.rot)];
-      if (cvReady && lastCheck.blurry){       // shaky: take it again once
-        await new Promise(r => setTimeout(r, 400));
-        full = await grabFrame(); await nextFrame();
-        outs = processCV(full);
+    let plan = null;
+    if (cvReady){
+      plan = planCapture(full, !!manual);
+      if (plan && plan.blurry){               // shaky: take it again once
+        await new Promise(r => setTimeout(r, 300));
+        full = await grabFrame();
+        plan = planCapture(full, !!manual);
       }
+      if (!plan){ errBeep(); finalStatus = 'reject'; return; }
+      if (plan.status === 'ref') finalStatus = 'fixed';
     }
-    catch(e){ console.error(e); outs = [rotateCanvasFallback(full, S.rot)]; }
-    if (!outs){
-      errBeep(); finalStatus = 'reject';
-      return;
-    }
-    if (lastCheck.status === 'ref') finalStatus = 'fixed';
-    for (const c of outs){
-      const blob = await toBlob(c, S.filter === 'bw' ? 0.8 : 0.85);
-      if (!blob) continue;
-      const p = {id:nextId(), blob, w:c.width, h:c.height, fix: lastCheck.status === 'ref'};
-      pages.push(p); await dbPut(p);
-    }
-    renderStrip();
-    beep();
-  } finally {
+    beep();                                   // photo is good: turn the page now
+    enqueue(full, plan);
+  } catch(e){ console.error(e); errBeep(); finalStatus = 'reject'; }
+  finally {
     busy = false; prev = null; stableSince = 0; doneAt = performance.now();
-    S.forceSave = false;
     setStatus(finalStatus);
   }
 }
@@ -1219,6 +1256,7 @@ function openExport(){
   $('#expSheet').hidden = false;
 }
 async function exportPDF(){
+  if (queued){ $('#expInfo').textContent = 'بيخلّص تجهيز آخر صفحات…'; await work; }
   if (!pages.length) return;
   if (!window.jspdf){ $('#expInfo').textContent = 'مكتبة الـ PDF ما اتحملتش. اتأكد من النت وافتح الصفحة تاني.'; return; }
   const {jsPDF} = window.jspdf;
