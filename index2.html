@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#121110">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>ماسح الكتب4</title>
+<title>ماسح الكتب5</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;600;700&display=swap" rel="stylesheet">
@@ -178,11 +178,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="lbl">شكل الصفحة</div>
       <div class="seg" id="filterSeg">
         <button data-v="original">أصلي</button>
-        <button data-v="enhance">ألوان نضيفة</button>
+        <button data-v="enhance">زي السكانر</button>
         <button data-v="gray">رمادي</button>
         <button data-v="bw">أبيض وأسود</button>
       </div>
-      <small>«أبيض وأسود» أوضح للنصوص وحجم الـ PDF أصغر. «ألوان نضيفة» بيبيّض الورق ويشيل الضل والإضاءة الصفرا ويسيب الألوان.</small>
+      <small>«أبيض وأسود» أوضح للنصوص وحجم الـ PDF أصغر. «زي السكانر» بيبيّض الورق ويشيل الضل ولون الإضاءة، ومن غير ما يغيّر ألوان الصور.</small>
     </div>
     <div class="row">
       <div class="lbl">تدوير الصورة</div>
@@ -242,7 +242,7 @@ const video = $('#video'), overlay = $('#overlay'), octx = overlay.getContext('2
 /* ---------- settings ---------- */
 const S = {delay:800, sens:5, filter:'enhance', rot:0, split:false, order:'ltr', needQuad:false, crop:true, auto:true};
 try { Object.assign(S, JSON.parse(localStorage.getItem('bookscan.settings') || '{}')); } catch(e) {}
-if (S.v !== 4){ S.filter = 'enhance'; S.hires = true; S.v = 4; }
+if (S.v !== 5){ S.filter = 'enhance'; S.hires = (S.hires !== false); S.v = 5; }
 if (S.hires === undefined) S.hires = true;
 function saveS(){ try { localStorage.setItem('bookscan.settings', JSON.stringify(S)); } catch(e) {} }
 
@@ -601,40 +601,93 @@ function rotateMat(m, deg){
 }
 // "Magic color": divide each channel by its estimated paper background.
 // Removes shadows and yellow light, paper turns white, ink keeps its color.
-function magicColor(m){ // m: RGBA → returns RGB, paper white, ink deep, like a copier scan
+// Copier-like cleanup that keeps the real colors:
+// 1) find the paper (bright, colorless pixels), 2) fit a smooth lighting surface to it,
+// 3) divide every channel by the same lighting value, 4) remove the light's color cast from the paper,
+// 5) set black/white points. Large colored areas are never treated as "paper".
+function solve6(M, v){ // Gaussian elimination, 6x6
+  const n = 6, A = M.map((r, i) => r.concat([v[i]]));
+  for (let c = 0; c < n; c++){
+    let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]];
+    if (Math.abs(A[c][c]) < 1e-9) return null;
+    for (let r = 0; r < n; r++){ if (r === c) continue; const f = A[r][c] / A[c][c]; for (let k = c; k <= n; k++) A[r][k] -= f * A[c][k]; }
+  }
+  return A.map((r, i) => r[n] / r[i]);
+}
+function magicColor(m){ // m: RGBA → returns RGB
   const rgb = new cv.Mat(); cv.cvtColor(m, rgb, cv.COLOR_RGBA2RGB); m.delete();
-  const W = rgb.cols, H = rgb.rows, sc = 96 / Math.min(W, H);
-  const small = new cv.Mat(), bg = new cv.Mat();
-  const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-  cv.resize(rgb, small, new cv.Size(Math.max(1, Math.round(W*sc)), Math.max(1, Math.round(H*sc))), 0, 0, cv.INTER_AREA);
-  cv.dilate(small, small, k);           // remove thin text
-  cv.medianBlur(small, small, 31);      // big window: keeps shaded boxes, removes lighting
-  cv.GaussianBlur(small, small, new cv.Size(0, 0), 3);
-  cv.resize(small, bg, new cv.Size(W, H), 0, 0, cv.INTER_LINEAR);
-  small.delete(); k.delete();
-  const sd = rgb.data, bd = bg.data, n = sd.length;
-  // 1) divide by paper background
+  const W = rgb.cols, H = rgb.rows, sc = 128 / Math.max(W, H);
+  const sm = new cv.Mat();
+  const w = Math.max(1, Math.round(W * sc)), h = Math.max(1, Math.round(H * sc));
+  cv.resize(rgb, sm, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+  const d = sm.data, N = w * h;
+  const lum = new Float32Array(N), sat = new Float32Array(N);
+  for (let i = 0; i < N; i++){
+    const r = d[i*3], g = d[i*3+1], b = d[i*3+2];
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    lum[i] = (r + g + b) / 3; sat[i] = (mx - mn) / Math.max(mx, 1);
+  }
+  const sorted = Array.from(lum).sort((x, y) => x - y), p40 = sorted[Math.floor(N * 0.4)];
+  const mask = new Uint8Array(N);
+  for (let i = 0; i < N; i++) mask[i] = (sat[i] < 0.18 && lum[i] > p40) ? 1 : 0;
+  let coef = null;
+  for (let it = 0; it < 3; it++){
+    const M = [...Array(6)].map(() => new Array(6).fill(0)), v = new Array(6).fill(0);
+    let cnt = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+      const i = y*w + x; if (!mask[i]) continue;
+      const xn = x / w - 0.5, yn = y / h - 0.5, f = [1, xn, yn, xn*xn, yn*yn, xn*yn];
+      for (let a = 0; a < 6; a++){ v[a] += f[a] * lum[i]; for (let b = 0; b < 6; b++) M[a][b] += f[a] * f[b]; }
+      cnt++;
+    }
+    if (cnt < 30) break;
+    const c = solve6(M, v); if (!c) break; coef = c;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+      const i = y*w + x; if (!mask[i]) continue;
+      const xn = x / w - 0.5, yn = y / h - 0.5;
+      const F = coef[0] + coef[1]*xn + coef[2]*yn + coef[3]*xn*xn + coef[4]*yn*yn + coef[5]*xn*yn;
+      if (lum[i] < F * 0.9) mask[i] = 0;
+    }
+  }
+  // paper color (for removing the light's tint)
+  let pr = 0, pg = 0, pb = 0, pc = 0;
+  for (let i = 0; i < N; i++) if (mask[i]){ pr += d[i*3]; pg += d[i*3+1]; pb += d[i*3+2]; pc++; }
+  sm.delete();
+  if (!coef || pc < 30){ // no paper found: only a gentle global stretch
+    rgb.convertTo(rgb, -1, 1.1, 5); return rgb;
+  }
+  pr /= pc; pg /= pc; pb /= pc;
+  const pl = (pr + pg + pb) / 3, wr = pl / Math.max(pr, 1), wg = pl / Math.max(pg, 1), wb = pl / Math.max(pb, 1);
+  const TARGET = 250, sd = rgb.data;
   const hist = new Uint32Array(256);
-  for (let i = 0; i < n; i += 3){
-    let l = 0;
-    for (let c = 0; c < 3; c++){ const v = Math.min(255, (sd[i+c] * 255 / (bd[i+c] || 1)) | 0); sd[i+c] = v; l += v; }
-    hist[(l / 3) | 0]++;
+  for (let y = 0; y < H; y++){
+    const yn = y / H - 0.5;
+    for (let x = 0; x < W; x++){
+      const xn = x / W - 0.5;
+      const F = Math.max(8, coef[0] + coef[1]*xn + coef[2]*yn + coef[3]*xn*xn + coef[4]*yn*yn + coef[5]*xn*yn);
+      const gn = TARGET / F, i = (y*W + x) * 3;
+      const r = Math.min(255, sd[i] * gn * wr), g = Math.min(255, sd[i+1] * gn * wg), b = Math.min(255, sd[i+2] * gn * wb);
+      sd[i] = r; sd[i+1] = g; sd[i+2] = b;
+      hist[((r + g + b) / 3) | 0]++;
+    }
   }
-  bg.delete();
-  // 2) levels: black point = darkest 0.5%, white point 245, gentle gamma for deeper ink
-  let acc = 0, lo = 0; const target = (n / 3) * 0.005;
+  let acc = 0, lo = 0; const target = W * H * 0.005;
   for (; lo < 255; lo++){ acc += hist[lo]; if (acc >= target) break; }
-  lo = Math.min(lo, 150);
-  const lut = new Uint8Array(256), hi = 245;
-  for (let v = 0; v < 256; v++){
-    const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
-    lut[v] = Math.round(255 * Math.pow(t, 1.25));
+  lo = Math.min(lo, 120);
+  const lut = new Float32Array(256);
+  for (let v = 0; v < 256; v++) lut[v] = Math.max(0, Math.min(255, (v - lo) * 255 / (TARGET - lo)));
+  const SAT = 1.05, n = W * H * 3;
+  for (let i = 0; i < n; i += 3){
+    const r = lut[sd[i]], g = lut[sd[i+1]], b = lut[sd[i+2]];
+    const L = 0.299*r + 0.587*g + 0.114*b;
+    sd[i]   = Math.max(0, Math.min(255, L + (r - L) * SAT));
+    sd[i+1] = Math.max(0, Math.min(255, L + (g - L) * SAT));
+    sd[i+2] = Math.max(0, Math.min(255, L + (b - L) * SAT));
   }
-  for (let i = 0; i < n; i++) sd[i] = lut[sd[i]];
-  // 3) light sharpening
   const bl = new cv.Mat(), out = new cv.Mat();
-  cv.GaussianBlur(rgb, bl, new cv.Size(0, 0), 1.2);
-  cv.addWeighted(rgb, 1.6, bl, -0.6, 0, out);
+  cv.GaussianBlur(rgb, bl, new cv.Size(0, 0), 1.0);
+  cv.addWeighted(rgb, 1.4, bl, -0.4, 0, out);
   rgb.delete(); bl.delete();
   return out;
 }
