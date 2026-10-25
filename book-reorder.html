@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>مرتّب صفحات الكتب</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+/* Layout: one working column — steps 1→3 stacked; scans grid, then reordered-pages strip */
+:root{
+  --bg:#f3f5f4; --surface:#ffffff; --fg:#17201d; --muted:#5d6b66; --line:#d7dfdb;
+  --accent:#0f7a5c; --accent-soft:#dff1ea; --warn:#b4540a; --warn-soft:#fdeedd; --bad:#b3261e;
+  --f-body:"IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  --f-num:"IBM Plex Mono", ui-monospace, Consolas, monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#111715; --surface:#1a2320; --fg:#e6ece9; --muted:#9aaba4; --line:#2c3a35;
+  --accent:#4cc39a; --accent-soft:#1d3a30; --warn:#f0a35c; --warn-soft:#3a2a19; --bad:#ff8a80; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#111715; --surface:#1a2320; --fg:#e6ece9; --muted:#9aaba4; --line:#2c3a35;
+  --accent:#4cc39a; --accent-soft:#1d3a30; --warn:#f0a35c; --warn-soft:#3a2a19; --bad:#ff8a80; color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--f-body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 60px}
+.wrap{max-width:1100px;margin:0 auto;display:grid;gap:20px}
+h1{font-size:1.6rem;margin:0;text-wrap:balance}
+h2{font-size:1.1rem;margin:0 0 4px;display:flex;gap:10px;align-items:center}
+.step{font-family:var(--f-num);font-size:.8rem;background:var(--accent);color:var(--bg);border-radius:6px;padding:1px 8px}
+p{margin:0;color:var(--muted)}
+section{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;display:grid;gap:14px}
+label{font-size:.9rem}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+select,input[type=number]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+input[type=number]{width:72px;font-family:var(--f-num);text-align:center}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:7px 14px}
+button.primary{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:28px 16px;text-align:center;cursor:pointer;display:grid;gap:6px;justify-items:center}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.drop strong{font-size:1.05rem}
+.explain{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.explain div{background:var(--bg);border-radius:10px;padding:12px;font-size:.9rem;color:var(--muted)}
+.explain b{color:var(--fg)}
+.scans{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.scan{border:1px solid var(--line);border-radius:10px;padding:10px;display:grid;gap:8px;background:var(--bg);min-width:0}
+.scan.first{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.scan .head{display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted)}
+.imgbox{position:relative;overflow:hidden;border-radius:6px;background:var(--surface)}
+.imgbox img{display:block;width:100%}
+.imgbox .cut{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed var(--accent)}
+.nums{display:flex;direction:ltr;justify-content:space-between;gap:6px}
+.nums input.err{border-color:var(--bad);color:var(--bad)}
+.tools{display:flex;gap:6px}
+.tools button{padding:3px 10px;font-size:.8rem}
+.status{font-size:.9rem;padding:10px 12px;border-radius:8px;background:var(--accent-soft)}
+.status.warn{background:var(--warn-soft);color:var(--warn)}
+.pages{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:10px}
+.page{display:grid;gap:4px;justify-items:center;font-family:var(--f-num);font-size:.8rem;color:var(--muted)}
+.page canvas{width:100%;height:auto;border:1px solid var(--line);border-radius:4px;background:#fff}
+.hint{font-size:.85rem;color:var(--muted)}
+.ltr{direction:ltr;unicode-bidi:isolate}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="display:grid;gap:6px">
+    <h1>مرتّب صفحات الكتب المصوّرة</h1>
+    <p>للكتب المدبّسة من النص: كل صورة فيها صفحتين قدام بعض (زي ٢ قدام ١٥). الأداة بتقسم كل صورة نصين وترتب الصفحات من ١ للآخر وتطلّع PDF.</p>
+  </header>
+
+  <section>
+    <h2><span class="step">1</span> ارفع الكتاب</h2>
+    <div class="drop" id="drop" tabindex="0" role="button">
+      <strong>اختار ملف PDF أو صور السكان</strong>
+      <span class="hint">أو اسحبهم هنا · الصور بتترتب بالاسم</span>
+    </div>
+    <input type="file" id="file" accept="application/pdf,image/*" multiple hidden>
+    <div class="explain">
+      <div><b>ليه الصفحات ملخبطة؟</b><br>في كتاب ١٦ صفحة مدبّس من النص، الورقة الواحدة عليها ١٦ و١ من وش، و٢ و١٥ من الضهر. أي صفحتين قدام بعض مجموعهم = عدد الصفحات + ١.</div>
+      <div><b>المطلوب منك:</b><br>اكتب رقمي الصفحتين في <b>أول صورة</b> بس، والأداة تستنتج عدد صفحات الكتاب وترقّم الباقي لوحدها.</div>
+      <div><b>راجع وصلّح:</b><br>لو أي صورة طلعت غلط، عدّل رقمها بإيدك أو اضغط «بدّل» أو «اقلب ١٨٠°».</div>
+    </div>
+    <div class="status" id="loadStatus" hidden></div>
+  </section>
+
+  <section id="setup" hidden>
+    <h2><span class="step">2</span> رقّم أول صورة واختار طريقة التصوير</h2>
+    <div class="row">
+      <label for="order">اتصورت إزاي؟</label>
+      <select id="order">
+        <option value="A">كل ورقة: وش وبعده ضهر، ورقة ورا ورقة</option>
+        <option value="B">كل الوشوش الأول، وبعدين كل الضهور بنفس الترتيب</option>
+        <option value="C">كل الوشوش الأول، وبعدين الضهور بالعكس (قلبت الرزمة)</option>
+        <option value="M">يدوي: هكتب كل الأرقام بنفسي</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="split">مكان القصّ</label>
+      <input type="range" id="split" min="40" max="60" step="0.5" value="50" style="width:180px">
+      <span id="splitVal" class="ltr" style="font-family:var(--f-num)">50%</span>
+      <button id="autoBtn" class="primary">رقّم الباقي تلقائي</button>
+    </div>
+    <p class="hint">اكتب الرقم المطبوع على الصفحة الشمال والصفحة اليمين في الصورة الأولى (المحددة بالأخضر)، وبعدين اضغط «رقّم الباقي تلقائي».</p>
+    <div class="scans" id="scans"></div>
+  </section>
+
+  <section id="result" hidden>
+    <h2><span class="step">3</span> الترتيب النهائي</h2>
+    <div class="status" id="check"></div>
+    <div class="pages" id="pages"></div>
+    <div class="row">
+      <label for="layout">شكل الملف</label>
+      <select id="layout">
+        <option value="spread">صفحتين قدام بعض (الغلاف لوحده)</option>
+        <option value="spreadrtl">صفحتين قدام بعض – كتاب عربي (من اليمين)</option>
+        <option value="single">كل صفحة لوحدها</option>
+      </select>
+    </div>
+    <div class="row">
+      <button class="primary" id="exportBtn">تحميل PDF مرتّب</button>
+      <span class="hint" id="exportStatus"></span>
+    </div>
+  </section>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const $ = id => document.getElementById(id);
+const state = { scans: [], name: "book", split: 0.5 };
+const toAr = n => String(n);
+
+/* ---------- loading ---------- */
+const drop = $("drop"), fileIn = $("file");
+drop.onclick = () => fileIn.click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") fileIn.click(); };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); load([...e.dataTransfer.files]); };
+fileIn.onchange = () => load([...fileIn.files]);
+
+function loadImg(src){ return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; }); }
+function thumbOf(img, w){
+  const c = document.createElement("canvas"); const s = Math.min(1, w / img.naturalWidth);
+  c.width = img.naturalWidth * s; c.height = img.naturalHeight * s;
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return loadImg(c.toDataURL("image/jpeg", 0.8));
+}
+function status(msg, warn){ const s = $("loadStatus"); s.hidden = false; s.textContent = msg; s.classList.toggle("warn", !!warn); }
+
+async function load(files){
+  if (!files.length) return;
+  state.scans = [];
+  const pdf = files.find(f => f.type === "application/pdf");
+  try {
+    if (pdf){
+      state.name = pdf.name.replace(/\.pdf$/i, "");
+      const doc = await pdfjsLib.getDocument({ data: await pdf.arrayBuffer() }).promise;
+      for (let p = 1; p <= doc.numPages; p++){
+        status(`بجهّز صورة ${p} من ${doc.numPages}…`);
+        const page = await doc.getPage(p);
+        const v1 = page.getViewport({ scale: 1 });
+        const scale = Math.min(3, 2600 / v1.width);
+        const v = page.getViewport({ scale });
+        const c = document.createElement("canvas"); c.width = v.width; c.height = v.height;
+        await page.render({ canvasContext: c.getContext("2d"), viewport: v }).promise;
+        const img = await loadImg(c.toDataURL("image/jpeg", 0.9));
+        state.scans.push({ img, thumb: await thumbOf(img, 500), L: "", R: "", rot: false });
+      }
+    } else {
+      const imgs = files.filter(f => f.type.startsWith("image/"))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+      state.name = (imgs[0]?.name || "book").replace(/\.[^.]+$/, "");
+      for (let i = 0; i < imgs.length; i++){
+        status(`بجهّز صورة ${i + 1} من ${imgs.length}…`);
+        const img = await loadImg(URL.createObjectURL(imgs[i]));
+        state.scans.push({ img, thumb: await thumbOf(img, 500), L: "", R: "", rot: false });
+      }
+    }
+  } catch (err){ status("مقدرتش أفتح الملف. اتأكد إنه PDF أو صور سليمة وجرب تاني.", true); return; }
+  if (!state.scans.length){ status("مفيش صفحات في الملف ده.", true); return; }
+  const n = state.scans.length;
+  status(`اتحمّل ${n} صورة = ${n * 2} صفحة متوقعة${(n * 2) % 4 ? " (ملحوظة: الكتاب المدبّس عدد صفحاته بيقبل القسمة على ٤)" : ""}.`, (n * 2) % 4 !== 0);
+  $("setup").hidden = false; $("result").hidden = false;
+  renderScans(); refresh();
+}
+
+/* ---------- scans UI ---------- */
+function renderScans(){
+  const box = $("scans"); box.innerHTML = "";
+  state.scans.forEach((s, i) => {
+    const el = document.createElement("div"); el.className = "scan" + (i === 0 ? " first" : "");
+    el.innerHTML = `
+      <div class="head"><span>صورة ${i + 1}${i === 0 ? " · ابدأ هنا" : ""}</span>
+        <div class="tools"><button data-a="swap">بدّل</button><button data-a="rot">اقلب ١٨٠°</button></div></div>
+      <div class="imgbox"><img alt="صورة ${i + 1}"><div class="cut"></div></div>
+      <div class="nums"><input type="number" min="1" id="L${i}" aria-label="رقم الصفحة الشمال" placeholder="شمال">
+        <input type="number" min="1" id="R${i}" aria-label="رقم الصفحة اليمين" placeholder="يمين"></div>`;
+    const img = el.querySelector("img"); img.src = s.thumb.src;
+    img.style.transform = s.rot ? "rotate(180deg)" : "";
+    el.querySelector(".cut").style.left = (state.split * 100) + "%";
+    const L = el.querySelector(`#L${i}`), R = el.querySelector(`#R${i}`);
+    L.value = s.L; R.value = s.R;
+    L.oninput = () => { s.L = L.value; refresh(); };
+    R.oninput = () => { s.R = R.value; refresh(); };
+    el.querySelector('[data-a="swap"]').onclick = () => { [s.L, s.R] = [s.R, s.L]; renderScans(); refresh(); };
+    el.querySelector('[data-a="rot"]').onclick = () => { s.rot = !s.rot; [s.L, s.R] = [s.R, s.L]; renderScans(); refresh(); };
+    box.appendChild(el);
+  });
+}
+
+$("split").oninput = e => {
+  state.split = e.target.value / 100; $("splitVal").textContent = e.target.value + "%";
+  document.querySelectorAll(".cut").forEach(c => c.style.left = e.target.value + "%");
+  refresh();
+};
+
+/* ---------- auto numbering (saddle-stitch imposition) ---------- */
+$("autoBtn").onclick = () => {
+  const s0 = state.scans[0], a = +s0.L, b = +s0.R;
+  if (!a || !b){ status("اكتب رقمي الصفحتين في أول صورة الأول.", true); return; }
+  const order = $("order").value; if (order === "M") return;
+  const N = a + b - 1, S = Math.ceil(N / 4);
+  const lo = Math.min(a, b);
+  const firstFront = lo % 2 === 1;                  // front face holds odd small page
+  const k0 = Math.floor((lo - 1) / 2);              // sheet index from outside
+  const bigLeftFirst = a > b;
+  const frontBigLeft = firstFront ? bigLeftFirst : !bigLeftFirst;
+  const sheets = [];
+  if (k0 > (S - 1) / 2) for (let k = k0; k >= 0; k--) sheets.push(k);
+  else { for (let k = k0; k < S; k++) sheets.push(k); }
+  const faces = [];
+  const f1 = firstFront ? "F" : "B", f2 = firstFront ? "B" : "F";
+  if (order === "A") sheets.forEach(k => faces.push([k, f1], [k, f2]));
+  else { sheets.forEach(k => faces.push([k, f1])); (order === "C" ? [...sheets].reverse() : sheets).forEach(k => faces.push([k, f2])); }
+  state.scans.forEach((s, i) => {
+    const f = faces[i]; if (!f) return;
+    const [k, side] = f;
+    const small = side === "F" ? 2 * k + 1 : 2 * k + 2, big = N + 1 - small;
+    const bigLeft = side === "F" ? frontBigLeft : !frontBigLeft;
+    s.L = String(bigLeft ? big : small); s.R = String(bigLeft ? small : big);
+  });
+  renderScans(); refresh();
+  const msg = `الكتاب ${N} صفحة (${S} ورقة). راجع الأرقام تحت قبل التحميل.`;
+  status(state.scans.length * 2 === N ? msg : msg + ` عدد الصور ${state.scans.length} والمفروض ${N / 2}.`, state.scans.length * 2 !== N);
+};
+
+/* ---------- cropping ---------- */
+function cropHalf(img, rot, side, maxW){
+  const W = img.naturalWidth, H = img.naturalHeight, sx = Math.round(state.split * W);
+  const x0 = side === "L" ? 0 : sx, x1 = side === "L" ? sx : W, ow = x1 - x0;
+  const ox0 = rot ? W - x1 : x0;
+  const sc = maxW ? Math.min(1, maxW / ow) : 1;
+  const c = document.createElement("canvas"); c.width = Math.round(ow * sc); c.height = Math.round(H * sc);
+  const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+  if (rot){ ctx.translate(c.width, c.height); ctx.rotate(Math.PI); }
+  ctx.drawImage(img, ox0, 0, ow, H, 0, 0, c.width, c.height);
+  return c;
+}
+
+function ordered(){
+  const list = [];
+  state.scans.forEach((s, i) => {
+    if (s.L !== "") list.push({ n: +s.L, i, side: "L" });
+    if (s.R !== "") list.push({ n: +s.R, i, side: "R" });
+  });
+  return list.sort((x, y) => x.n - y.n);
+}
+
+/* ---------- result + validation ---------- */
+let t;
+function refresh(){ clearTimeout(t); t = setTimeout(drawResult, 150); }
+function drawResult(){
+  const list = ordered(), counts = {};
+  list.forEach(p => counts[p.n] = (counts[p.n] || 0) + 1);
+  const max = list.length ? list[list.length - 1].n : 0;
+  const missing = [], dup = Object.keys(counts).filter(k => counts[k] > 1).map(Number);
+  for (let n = 1; n <= max; n++) if (!counts[n]) missing.push(n);
+  const empty = state.scans.length * 2 - list.length;
+  state.scans.forEach((s, i) => {
+    $("L" + i)?.classList.toggle("err", s.L !== "" && counts[+s.L] > 1);
+    $("R" + i)?.classList.toggle("err", s.R !== "" && counts[+s.R] > 1);
+  });
+  const ck = $("check"); const issues = [];
+  if (empty) issues.push(`${empty} صفحة من غير رقم`);
+  if (dup.length) issues.push(`أرقام متكررة: ${dup.join("، ")}`);
+  if (missing.length) issues.push(`أرقام ناقصة: ${missing.slice(0, 20).join("، ")}${missing.length > 20 ? "…" : ""}`);
+  ck.textContent = issues.length ? issues.join(" · ") : `تمام: ${list.length} صفحة مرتبة من ١ لـ ${max}.`;
+  ck.classList.toggle("warn", issues.length > 0);
+  $("exportBtn").disabled = !list.length;
+  const box = $("pages"); box.innerHTML = "";
+  list.forEach(p => {
+    const d = document.createElement("div"); d.className = "page";
+    d.appendChild(cropHalf(state.scans[p.i].thumb, state.scans[p.i].rot, p.side, 180));
+    const lab = document.createElement("span"); lab.textContent = p.n; d.appendChild(lab);
+    box.appendChild(d);
+  });
+}
+
+/* ---------- export ---------- */
+$("exportBtn").onclick = async () => {
+  const list = ordered(); if (!list.length) return;
+  const btn = $("exportBtn"), st = $("exportStatus"); btn.disabled = true;
+  const { jsPDF } = window.jspdf; let doc;
+  const layout = $("layout").value;
+  // groups: single → [p]; spread → [1], [2,3], [4,5] … last alone if even count
+  const groups = [];
+  if (layout === "single") list.forEach(p => groups.push([p]));
+  else { groups.push([list[0]]); for (let k = 1; k < list.length; k += 2) groups.push(list.slice(k, k + 2)); }
+  for (let k = 0; k < groups.length; k++){
+    st.textContent = `بجهّز ${k + 1} من ${groups.length}…`;
+    await new Promise(r => setTimeout(r));
+    let parts = groups[k].map(p => cropHalf(state.scans[p.i].img, state.scans[p.i].rot, p.side));
+    if (layout === "spreadrtl") parts.reverse();
+    let c = parts[0];
+    if (parts.length > 1){
+      c = document.createElement("canvas");
+      c.width = parts[0].width + parts[1].width; c.height = Math.max(parts[0].height, parts[1].height);
+      const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height);
+      x.drawImage(parts[0], 0, 0); x.drawImage(parts[1], parts[0].width, 0);
+    }
+    const w = c.width * 72 / 200, h = c.height * 72 / 200, o = w > h ? "l" : "p";
+    if (!doc) doc = new jsPDF({ unit: "pt", format: [w, h], orientation: o });
+    else doc.addPage([w, h], o);
+    doc.addImage(c.toDataURL("image/jpeg", 0.88), "JPEG", 0, 0, w, h);
+  }
+  doc.save(state.name + "_مرتب.pdf");
+  st.textContent = "اتحمّل الملف."; btn.disabled = false;
+};
+</script>
+</body>
+</html>
